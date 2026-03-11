@@ -237,6 +237,18 @@ export interface CsbExtractionResult {
   messages: Array<{ level: 'info' | 'warning' | 'error'; text: string }>;
   /** Which backend successfully read the CSBs */
   backend: 'powershell-pwmodule' | 'powershell-dmscli' | 'wsg-documents' | 'manual';
+  /**
+   * The real ProjectWise working directory for the active datasource.
+   * Returned by Backend A (pwps_dab) when available; used to seed PW_WORKDIR
+   * with the actual local checkout path instead of a temp directory.
+   *
+   * Format:  C:\Users\<user>\AppData\Local\Bentley\ProjectWise\<datasource>\working
+   *
+   * When present this is used as PW_WORKDIR in the generated master .tmp so that
+   * DMS_PROJECT() and dms_project-type variables resolve correctly against the
+   * user's actual ProjectWise working copy location.
+   */
+  pwWorkingDir?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,15 +280,21 @@ export async function extractManagedWorkspace(
 
   const messages: CsbExtractionResult['messages'] = [];
   const dmsPathMap: DmsPathMap = {};
+  let pwWorkingDir: string | undefined;
 
   // ── Step 1: Fetch CSBs ────────────────────────────────────────────────────
   let csbs: CsbBlock[] | null = null;
   let backend: CsbExtractionResult['backend'] = 'manual';
 
   if (isPowerShellPwModuleAvailable()) {
-    messages.push({ level: 'info', text: 'Backend A: ProjectWise PowerShell module' });
+    messages.push({ level: 'info', text: 'Backend A: ProjectWise PowerShell module (pwps_dab)' });
     try {
-      csbs = await readCsbsViaPwModule(conn, ctx);
+      const result = await readCsbsViaPwModule(conn, ctx);
+      csbs = result.csbs;
+      if (result.pwWorkingDir) {
+        pwWorkingDir = result.pwWorkingDir;
+        messages.push({ level: 'info', text: `PW working directory: ${pwWorkingDir}` });
+      }
       backend = 'powershell-pwmodule';
       messages.push({ level: 'info', text: `Read ${csbs.length} CSBs via PW module` });
     } catch (e) {
@@ -342,6 +360,12 @@ export async function extractManagedWorkspace(
   // Second pass: any other PWFolder type variables not yet downloaded
   await downloadAdditionalPwFolders(client, orderedCsbs, workDir, dmsPathMap, messages);
 
+  // Third pass: scan Literal CSB values and downloaded CFG files for @: paths.
+  // This resolves recursive include chains — e.g. a downloaded WorkSpace.cfg that
+  // %includes @:\Configuration\Organization\*.cfg triggers a further download of
+  // the Organization folder. Continues until no new @: paths are found (up to 10 passes).
+  await resolveAtPathsRecursively(client, orderedCsbs, workDir, dmsPathMap, messages);
+
   // ── Step 5: Write {CsbID}.cfg files ───────────────────────────────────────
   for (const csb of orderedCsbs) {
     const cfgContent = csbToCfgContent(csb, workDir, dmsPathMap);
@@ -356,12 +380,15 @@ export async function extractManagedWorkspace(
   // ── Step 6: Write master .tmp ─────────────────────────────────────────────
   const masterTmpPath = path.join(wsDir, `${ctx.datasource}.tmp`);
   const masterContent = buildMasterTmp(
-    orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceName, worksetName
+    orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceName, worksetName, pwWorkingDir
   );
   fs.writeFileSync(masterTmpPath, masterContent, 'utf8');
   messages.push({ level: 'info', text: `Master config: ${path.basename(masterTmpPath)}` });
 
-  return { masterTmpPath, workDir, csbs: orderedCsbs, dmsPathMap, workspaceName, worksetName, messages, backend };
+  return {
+    masterTmpPath, workDir, csbs: orderedCsbs, dmsPathMap,
+    workspaceName, worksetName, messages, backend, pwWorkingDir,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -460,7 +487,10 @@ function isPowerShellPwModuleAvailable(): boolean {
   return detectPowerShellPwModule() !== null;
 }
 
-async function readCsbsViaPwModule(conn: PwConnection, ctx: ManagedWorkspaceContext): Promise<CsbBlock[]> {
+async function readCsbsViaPwModule(
+  conn: PwConnection,
+  ctx: ManagedWorkspaceContext
+): Promise<{ csbs: CsbBlock[]; pwWorkingDir: string }> {
   const moduleName = detectPowerShellPwModule();
   if (!moduleName) {
     throw new Error('Neither PWPS_DAB nor ProjectWise PowerShell module is available.');
@@ -498,10 +528,63 @@ async function readCsbsViaPwModule(conn: PwConnection, ctx: ManagedWorkspaceCont
 param($Server, $Datasource, $Username, $Password, $ApplicationId, $FolderGuid, $DocumentGuid)
 Import-Module "${moduleName}" -ErrorAction Stop
 
-# ── Authentication ────────────────────────────────────────────────────────────
-$secPass = ConvertTo-SecureString $Password -AsPlainText -Force
-$creds   = New-Object System.Management.Automation.PSCredential($Username, $secPass)
-Open-PWDatasource -Server $Server -Datasource $Datasource -Credential $creds -ErrorAction Stop | Out-Null
+# ── Authentication ─────────────────────────────────────────────────────────────
+# pwps_dab supports two login patterns depending on version:
+#
+#   New-PWLogin (preferred, modern):
+#     -ProjectWiseServer "server:datasource"
+#     The server part is the PW server hostname WITHOUT the -ws suffix.
+#     The datasource is the name configured in ProjectWise Administrator.
+#     Combined format: "server.company.com:MyDatasource"
+#
+#   Open-PWDatasource (legacy):
+#     -Server hostname  -Datasource name  -Credential $creds
+#
+# We probe for New-PWLogin first (as the blog documents it as the current API).
+
+$loginCmdlet = @('New-PWLogin','Open-PWDatasource') |
+  Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+  Select-Object -First 1
+
+if (-not $loginCmdlet) {
+  throw "No login cmdlet found in module ${moduleName}. Expected 'New-PWLogin' or 'Open-PWDatasource'."
+}
+
+if ($loginCmdlet -eq 'New-PWLogin') {
+  # "server:datasource" — $Server is already the hostname without -ws suffix (stripped by TS).
+  # $Datasource is the name configured in ProjectWise Administrator.
+  New-PWLogin -ProjectWiseServer "$Server:$Datasource" -UserName $Username -Password $Password -ErrorAction Stop | Out-Null
+} else {
+  $secPass = ConvertTo-SecureString $Password -AsPlainText -Force
+  $creds   = New-Object System.Management.Automation.PSCredential($Username, $secPass)
+  Open-PWDatasource -Server $Server -Datasource $Datasource -Credential $creds -ErrorAction Stop | Out-Null
+}
+
+# ── Get the PW working directory for this datasource ──────────────────────────
+# The working directory is the local folder where PW copies out checked-out
+# files. It is needed for PW_WORKDIR seeding and for DMS_PROJECT() resolution.
+# pwps_dab exposes this via the datasource info object.
+$pwWorkingDir = ''
+$dsCmdlet = @('Get-PWCurrentDatasource','Get-PWDatasource','Get-PWDatasourceProperties') |
+  Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+  Select-Object -First 1
+
+if ($dsCmdlet) {
+  try {
+    $dsInfo = & $dsCmdlet -ErrorAction SilentlyContinue
+    $pwWorkingDir = [string]($dsInfo.WorkingDirectory ??
+                             $dsInfo.LocalWorkingDirectory ??
+                             $dsInfo.LocalWorkDir ??
+                             $dsInfo.WorkDir ?? '')
+  } catch { $pwWorkingDir = '' }
+}
+
+# Fall back to the standard ProjectWise working directory convention:
+#   %LOCALAPPDATA%\Bentley\ProjectWise\<datasource>\working\
+if (-not $pwWorkingDir) {
+  $localApp = [Environment]::GetFolderPath('LocalApplicationData')
+  $pwWorkingDir = Join-Path $localApp "Bentley\ProjectWise\$Datasource\working"
+}
 
 # ── Diagnostic: list available CSB-related cmdlets to stderr ─────────────────
 $availableCsbCmdlets = Get-Command -Module "${moduleName}" |
@@ -512,6 +595,7 @@ if ($availableCsbCmdlets) {
 } else {
   [Console]::Error.WriteLine("No CSB-specific cmdlets found in module ${moduleName}")
 }
+[Console]::Error.WriteLine("Login: $loginCmdlet | WorkingDir: $pwWorkingDir")
 
 # ── If DocumentGuid provided, resolve it to a FolderGuid ─────────────────────
 # Some workflows start from a selected document rather than a folder.
@@ -694,8 +778,14 @@ foreach ($csb in $csbs) {
   })
 }
 
-# Wrap in array explicitly — ConvertTo-Json unwraps single-element collections otherwise
-@($result) | ConvertTo-Json -Depth 10
+# Output a wrapper object so the TypeScript caller can read both the CSBs and the
+# PW working directory in one JSON parse. The WorkingDir is used to seed PW_WORKDIR
+# in the master .tmp, which is the actual local working directory ProjectWise uses
+# for checked-out files (not a temp directory).
+@{
+  WorkingDir = $pwWorkingDir
+  Csbs       = @($result)
+} | ConvertTo-Json -Depth 10
 `;
 
   const tempScript = path.join(os.tmpdir(), `pw-csb-mod-${Date.now()}.ps1`);
@@ -731,6 +821,11 @@ foreach ($csb in $csbs) {
   } finally {
     try { fs.unlinkSync(tempScript); } catch { /* ignore */ }
   }
+}
+
+/** Thin wrapper that discards the working-dir half — used by backends that don't return it. */
+function parsePowerShellCsbJsonCsbsOnly(json: string): CsbBlock[] {
+  return parsePowerShellCsbJson(json).csbs;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -769,7 +864,7 @@ async function readCsbsViaDmscli(conn: PwConnection, ctx: ManagedWorkspaceContex
     if (result.status !== 0 || !out.trim()) {
       throw new Error(result.stderr?.toString() || 'dmscli script produced no output');
     }
-    return parsePowerShellCsbJson(out);
+    return parsePowerShellCsbJsonCsbsOnly(out);
   } finally {
     try { fs.unlinkSync(tempScript); } catch { /* ignore */ }
   }
@@ -1134,19 +1229,25 @@ async function downloadAdditionalPwFolders(
 
 /**
  * Navigate the PW folder tree to find the folder at a logical path.
- * Handles paths like "\MyDS\Configuration\WorkSpaces\" by descending
- * segment-by-segment from the root project list.
+ *
+ * Handles PW logical path formats:
+ *  • @:\Configuration\WorkSpaces\     — @: is the datasource root marker
+ *  • \MyDatasource\Configuration\     — leading datasource name as first segment
+ *  • Configuration\WorkSpaces\        — relative path from repository root
+ *  • /Configuration/WorkSpaces/       — forward-slash variant
+ *
+ * The @: prefix is stripped before descent; the remaining path is matched
+ * segment-by-segment from the repository root folder list.
  */
 async function findFolderByPath(
   client: ProjectWiseClient,
   logicalPath: string,
   rootFolders: PwFolder[]
 ): Promise<PwFolder | null> {
-  const segments = logicalPath
-    .replace(/^[/\\]+/, '').replace(/[/\\]+$/, '')
-    .split(/[/\\]/)
-    .filter(Boolean);
+  // Strip the @: datasource-root prefix (PW logical path root marker)
+  const stripped = logicalPath.replace(/^@:[/\\]*/i, '').replace(/^[/\\]+/, '').replace(/[/\\]+$/, '');
 
+  const segments = stripped.split(/[/\\]/).filter(Boolean);
   if (segments.length === 0) return null;
 
   let currentLevel: PwFolder[] = rootFolders;
@@ -1162,6 +1263,121 @@ async function findFolderByPath(
     }
   }
   return found;
+}
+
+/**
+ * After the initial PW folder downloads, scan all downloaded CFG/UCF/PCF files
+ * for %include directives that reference PW paths (starting with @:\ or @:/).
+ * Download any such folders that haven't been downloaded yet.
+ *
+ * This resolves the recursive include chain:
+ *   CSB → sets _USTN_CONFIGURATION = @:\Configuration\
+ *       → downloaded to dms00000/
+ *       → dms00000/WorkSpaces/MyWorkspace.cfg has:
+ *           %include @:\Configuration\Organization\*.cfg
+ *       → @:\Configuration\Organization\ is downloaded as dms00001/
+ *       → and so on until no new @: paths are found
+ *
+ * Also scans Literal-type CSB variable values for @: paths that should be
+ * downloaded (e.g. literal _USTN_CONFIGURATION assignments using @: syntax).
+ */
+async function resolveAtPathsRecursively(
+  client: ProjectWiseClient,
+  csbs: CsbBlock[],
+  workDir: string,
+  dmsPathMap: DmsPathMap,
+  messages: CsbExtractionResult['messages']
+): Promise<void> {
+  const seenPaths = new Set(
+    Object.values(dmsPathMap).map(e => normaliseAtPath(e.pwLogicalPath))
+  );
+
+  // Collect @: paths from Literal CSB variable values
+  const pending: string[] = [];
+  for (const csb of csbs) {
+    for (const v of csb.variables) {
+      if (v.value && isAtPath(v.value)) {
+        const n = normaliseAtPath(v.value);
+        if (!seenPaths.has(n)) { seenPaths.add(n); pending.push(v.value); }
+      }
+    }
+  }
+
+  // BFS: download folders, scan their CFG files for further @: includes
+  let batch = [...pending];
+  let pass = 0;
+  while (batch.length > 0 && pass < 10) { // safety limit
+    pass++;
+    const nextBatch: string[] = [];
+    for (const pwPath of batch) {
+      const dmsDir = await downloadPwFolderToDms(client, pwPath, workDir, dmsPathMap, messages);
+      if (!dmsDir) continue;
+
+      // Scan all downloaded CFG files for further @: %include paths
+      for (const file of walkLocalDir(dmsDir)) {
+        if (!/\.(cfg|ucf|pcf)$/i.test(file)) continue;
+        try {
+          const content = fs.readFileSync(file, 'utf8');
+          for (const atPath of extractAtPathsFromCfg(content)) {
+            const n = normaliseAtPath(atPath);
+            if (!seenPaths.has(n)) {
+              seenPaths.add(n);
+              nextBatch.push(atPath);
+            }
+          }
+        } catch { /* unreadable file — skip */ }
+      }
+    }
+    batch = nextBatch;
+  }
+  if (pass >= 10) {
+    messages.push({ level: 'warning', text: 'Stopped @: path resolution after 10 passes (possible cycle).' });
+  }
+}
+
+/** Returns true if a value string is a PW logical path using the @: root prefix. */
+function isAtPath(value: string): boolean {
+  return /^@:[/\\]/i.test(value);
+}
+
+/** Normalises a PW logical path for deduplication (lowercase, forward slashes, no trailing slash). */
+function normaliseAtPath(p: string): string {
+  return p.replace(/^@:[/\\]*/i, '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * Scan CFG file content for %include lines that reference @: paths.
+ * Returns all unique @: folder paths found.
+ */
+function extractAtPathsFromCfg(content: string): string[] {
+  const paths: string[] = [];
+  for (const line of content.split(/\r?\n/)) {
+    const stripped = line.replace(/#.*$/, '').trim();
+    // %include @:\Some\Path\ or %include @:\Some\Path\*.cfg
+    const m = stripped.match(/^%include\s+(@:[/\\][^*?\s]*)/i);
+    if (m) {
+      // Reduce to the folder part (strip filename/wildcard at end)
+      const raw = m[1];
+      const folder = raw.includes('*') || raw.includes('?')
+        ? raw.replace(/[/\\][^/\\]*$/, '') // strip last segment (filename/glob)
+        : raw;
+      if (folder) paths.push(folder);
+    }
+  }
+  return [...new Set(paths)];
+}
+
+/** Recursively list all files under a directory. */
+function walkLocalDir(dir: string): string[] {
+  const results: string[] = [];
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) results.push(...walkLocalDir(full));
+      else results.push(full);
+    }
+  } catch { /* ignore unreadable dirs */ }
+  return results;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1288,9 +1504,14 @@ export function buildMasterTmp(
   ctx: ManagedWorkspaceContext,
   dmsPathMap: DmsPathMap,
   workspaceName?: string,
-  worksetName?: string
+  worksetName?: string,
+  pwWorkingDir?: string
 ): string {
-  const fwdWorkDir = workDir.replace(/\\/g, '/');
+  // Use the real PW working directory if available (from pwps_dab datasource info).
+  // This is the local folder where ProjectWise copies out checked-out files, and is
+  // what PWE seeds as PW_WORKDIR. Fall back to the temp work directory otherwise.
+  const effectiveWorkDir = pwWorkingDir ?? workDir;
+  const fwdWorkDir = effectiveWorkDir.replace(/\\/g, '/');
   const fwdWsDir   = wsDir.replace(/\\/g, '/');
 
   const lines: string[] = [
@@ -1437,10 +1658,36 @@ function extractLastDirPiece(csbs: CsbBlock[], varName: string): string | undefi
 // Parsing helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function parsePowerShellCsbJson(json: string): CsbBlock[] {
+/**
+ * Parse the JSON produced by the Backend A and B PowerShell scripts.
+ *
+ * Handles two output formats:
+ *  - Legacy array:  [ { Id, Name, Level, Variables, ... }, ... ]
+ *  - Wrapper object: { WorkingDir: "...", Csbs: [ ... ] }
+ *
+ * The wrapper format is produced by the updated Backend A script so that the
+ * PW working directory (used for PW_WORKDIR seeding) can be passed back
+ * alongside the CSBs without a second round-trip.
+ */
+function parsePowerShellCsbJson(json: string): { csbs: CsbBlock[]; workingDir: string } {
   const clean = json.trim();
-  const data = JSON.parse(clean.startsWith('[') ? clean : `[${clean}]`);
-  return (Array.isArray(data) ? data : [data]).map((item: any) => ({
+  const raw = JSON.parse(clean);
+
+  // Detect wrapper object format
+  let csbArray: any[];
+  let workingDir = '';
+
+  if (Array.isArray(raw)) {
+    csbArray = raw;
+  } else if (raw && typeof raw === 'object' && (raw.Csbs ?? raw.csbs)) {
+    csbArray = raw.Csbs ?? raw.csbs ?? [];
+    workingDir = String(raw.WorkingDir ?? raw.workingDir ?? '');
+  } else {
+    // Single CSB object
+    csbArray = [raw];
+  }
+
+  const csbs = csbArray.map((item: any) => ({
     id: Number(item.Id ?? item.id ?? 0),
     name: String(item.Name ?? item.name ?? ''),
     description: String(item.Description ?? item.description ?? ''),
@@ -1453,7 +1700,9 @@ function parsePowerShellCsbJson(json: string): CsbBlock[] {
       locked: Boolean(v.Locked ?? v.locked ?? false),
     })),
     linkedCsbIds: Array.isArray(item.LinkedIds) ? item.LinkedIds.map(Number) : [],
-  }));
+  } as CsbBlock));
+
+  return { csbs, workingDir };
 }
 
 /**
