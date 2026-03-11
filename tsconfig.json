@@ -1,26 +1,13 @@
 {
-  "comments": {
-    "lineComment": "#"
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2020",
+    "outDir": "out",
+    "lib": ["ES2020"],
+    "sourceMap": true,
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true
   },
-  "brackets": [
-    ["(", ")"],
-    ["[", "]"]
-  ],
-  "autoClosingPairs": [
-    { "open": "(", "close": ")" },
-    { "open": "[", "close": "]" },
-    { "open": "\"", "close": "\"" }
-  ],
-  "surroundingPairs": [
-    ["(", ")"],
-    ["[", "]"],
-    ["\"", "\""]
-  ],
-  "folding": {
-    "markers": {
-      "start": "^\\s*#\\s*-{10,}",
-      "end": "^\\s*#\\s*-{10,}"
-    }
-  },
-  "wordPattern": "[A-Za-z_][A-Za-z0-9_\\-]*"
+  "exclude": ["node_modules", ".vscode-test"]
 }
