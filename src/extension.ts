@@ -784,6 +784,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
         let applicationInstanceId: string | undefined;
         let folderGuid: string | undefined;
+        let documentGuid: string | undefined;
         let label = `PW: ${conn.label}`;
 
         if (applications.length > 0) {
@@ -835,17 +836,23 @@ export function activate(context: vscode.ExtensionContext): void {
           }
         }
 
-        // Optionally pick the document folder for WorkSet/Discipline CSBs
-        // (only needed if the Application alone doesn't cover WorkSet-level CSBs)
+        // Optionally provide a document or folder GUID for WorkSet/Discipline CSBs.
+        // CSBs assigned at WorkSet/Discipline level are tied to the specific PW
+        // folder (Work Area) the document lives in — the Application-level CSBs
+        // alone don't carry those. The user can supply either:
+        //   • A folder GUID (for folder-level CSB assignment)
+        //   • A document GUID (extension resolves it to its parent folder via
+        //     pwps_dab Get-PWDocument or dmscli aaApi_SelectDocumentByGuid)
         if (applicationInstanceId && !folderGuid) {
-          const wantFolder = await vscode.window.showQuickPick(
+          const wantScope = await vscode.window.showQuickPick(
             [
-              { label: '$(folder) Select a document folder (WorkSet-level CSBs)', detail: 'yes' },
+              { label: '$(folder) Select a document folder (WorkSet-level CSBs)', detail: 'folder' },
+              { label: '$(file) Enter a document GUID (extension resolves folder)', detail: 'document' },
               { label: '$(pass) Application CSBs only', detail: 'no' },
             ],
-            { placeHolder: 'Do you want to specify the document folder for WorkSet/Discipline CSBs?' }
+            { placeHolder: 'Do you want to include WorkSet/Discipline CSBs for a specific document or folder?' }
           );
-          if (wantFolder?.detail === 'yes') {
+          if (wantScope?.detail === 'folder') {
             panel.showLoading('Select document folder (RichProject navigation or GUID)...');
             const folderSelection = await promptForPwFolderGuid(client, {
               title: 'Select Document Folder',
@@ -853,6 +860,17 @@ export function activate(context: vscode.ExtensionContext): void {
             });
             if (folderSelection) {
               folderGuid = folderSelection.folderGuid;
+            }
+          } else if (wantScope?.detail === 'document') {
+            const docGuidInput = await vscode.window.showInputBox({
+              title: 'Document GUID',
+              prompt: 'Enter the GUID of the ProjectWise document whose CSBs you want to extract',
+              placeHolder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+              validateInput: v => v.trim() ? null : 'Document GUID is required.',
+            });
+            if (docGuidInput?.trim()) {
+              documentGuid = docGuidInput.trim();
+              label += ` / doc:${documentGuid}`;
             }
           }
         }
@@ -863,6 +881,7 @@ export function activate(context: vscode.ExtensionContext): void {
           datasource: conn.datasource,
           applicationInstanceId,
           folderGuid,
+          documentGuid,
         }, client);
 
         const backendMsg = `Backend: ${extraction.backend} | CSBs: ${extraction.csbs.length}`;

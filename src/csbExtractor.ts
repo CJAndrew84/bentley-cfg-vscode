@@ -237,6 +237,18 @@ export interface CsbExtractionResult {
   messages: Array<{ level: 'info' | 'warning' | 'error'; text: string }>;
   /** Which backend successfully read the CSBs */
   backend: 'powershell-pwmodule' | 'powershell-dmscli' | 'wsg-documents' | 'manual';
+  /**
+   * The real ProjectWise working directory for the active datasource.
+   * Returned by Backend A (pwps_dab) when available; used to seed PW_WORKDIR
+   * with the actual local checkout path instead of a temp directory.
+   *
+   * Format:  C:\Users\<user>\AppData\Local\Bentley\ProjectWise\<datasource>\working
+   *
+   * When present this is used as PW_WORKDIR in the generated master .tmp so that
+   * DMS_PROJECT() and dms_project-type variables resolve correctly against the
+   * user's actual ProjectWise working copy location.
+   */
+  pwWorkingDir?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,15 +280,21 @@ export async function extractManagedWorkspace(
 
   const messages: CsbExtractionResult['messages'] = [];
   const dmsPathMap: DmsPathMap = {};
+  let pwWorkingDir: string | undefined;
 
   // ── Step 1: Fetch CSBs ────────────────────────────────────────────────────
   let csbs: CsbBlock[] | null = null;
   let backend: CsbExtractionResult['backend'] = 'manual';
 
   if (isPowerShellPwModuleAvailable()) {
-    messages.push({ level: 'info', text: 'Backend A: ProjectWise PowerShell module' });
+    messages.push({ level: 'info', text: 'Backend A: ProjectWise PowerShell module (pwps_dab)' });
     try {
-      csbs = await readCsbsViaPwModule(conn, ctx);
+      const result = await readCsbsViaPwModule(conn, ctx);
+      csbs = result.csbs;
+      if (result.pwWorkingDir) {
+        pwWorkingDir = result.pwWorkingDir;
+        messages.push({ level: 'info', text: `PW working directory: ${pwWorkingDir}` });
+      }
       backend = 'powershell-pwmodule';
       messages.push({ level: 'info', text: `Read ${csbs.length} CSBs via PW module` });
     } catch (e) {
@@ -342,6 +360,12 @@ export async function extractManagedWorkspace(
   // Second pass: any other PWFolder type variables not yet downloaded
   await downloadAdditionalPwFolders(client, orderedCsbs, workDir, dmsPathMap, messages);
 
+  // Third pass: scan Literal CSB values and downloaded CFG files for @: paths.
+  // This resolves recursive include chains — e.g. a downloaded WorkSpace.cfg that
+  // %includes @:\Configuration\Organization\*.cfg triggers a further download of
+  // the Organization folder. Continues until no new @: paths are found (up to 10 passes).
+  await resolveAtPathsRecursively(client, orderedCsbs, workDir, dmsPathMap, messages);
+
   // ── Step 5: Write {CsbID}.cfg files ───────────────────────────────────────
   for (const csb of orderedCsbs) {
     const cfgContent = csbToCfgContent(csb, workDir, dmsPathMap);
@@ -356,12 +380,15 @@ export async function extractManagedWorkspace(
   // ── Step 6: Write master .tmp ─────────────────────────────────────────────
   const masterTmpPath = path.join(wsDir, `${ctx.datasource}.tmp`);
   const masterContent = buildMasterTmp(
-    orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceName, worksetName
+    orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceName, worksetName, pwWorkingDir
   );
   fs.writeFileSync(masterTmpPath, masterContent, 'utf8');
   messages.push({ level: 'info', text: `Master config: ${path.basename(masterTmpPath)}` });
 
-  return { masterTmpPath, workDir, csbs: orderedCsbs, dmsPathMap, workspaceName, worksetName, messages, backend };
+  return {
+    masterTmpPath, workDir, csbs: orderedCsbs, dmsPathMap,
+    workspaceName, worksetName, messages, backend, pwWorkingDir,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -426,7 +453,19 @@ export async function getApplicationForFolder(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Backend A: PowerShell ProjectWise Module
+// Backend A: PowerShell ProjectWise Module (pwps_dab)
+//
+// pwps_dab is the authoritative PowerShell module for ProjectWise automation.
+// CSB data is NOT accessible via the WSG REST API — it lives in the PW database
+// and is only reachable via the native PowerShell module or dmscli.dll (Backend B).
+//
+// Cmdlet name discovery strategy:
+//   pwps_dab uses naming conventions like Get-PW<Entity>. For CSBs specifically,
+//   the module exposes functions for both Managed Workspace Profiles and the CSBs
+//   assigned to them. We probe for the cmdlets at runtime so the script works
+//   across different installed versions of pwps_dab.
+//
+//   See https://powerwisescripting.blog/ for the latest cmdlet documentation.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function detectPowerShellPwModule(): string | null {
@@ -434,7 +473,8 @@ function detectPowerShellPwModule(): string | null {
   try {
     const result = spawnSync('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-Command',
-      '$m = Get-Module -ListAvailable -Name ProjectWise,PWPS_DAB | Select-Object -First 1 -ExpandProperty Name; if ($m) { $m }',
+      // Prefer PWPS_DAB (64-bit, actively maintained) over the legacy ProjectWise module
+      '$m = Get-Module -ListAvailable -Name PWPS_DAB,ProjectWise | Select-Object -First 1 -ExpandProperty Name; if ($m) { $m }',
     ], { timeout: 8000 });
     const moduleName = (result.stdout?.toString() ?? '').trim();
     return moduleName || null;
@@ -447,62 +487,305 @@ function isPowerShellPwModuleAvailable(): boolean {
   return detectPowerShellPwModule() !== null;
 }
 
-async function readCsbsViaPwModule(conn: PwConnection, ctx: ManagedWorkspaceContext): Promise<CsbBlock[]> {
+async function readCsbsViaPwModule(
+  conn: PwConnection,
+  ctx: ManagedWorkspaceContext
+): Promise<{ csbs: CsbBlock[]; pwWorkingDir: string }> {
   const moduleName = detectPowerShellPwModule();
   if (!moduleName) {
-    throw new Error('Neither ProjectWise nor PWPS_DAB PowerShell module is available.');
+    throw new Error('Neither PWPS_DAB nor ProjectWise PowerShell module is available.');
   }
+
+  // ── pwps_dab Backend A script ─────────────────────────────────────────────
+  //
+  // CSB extraction via pwps_dab follows this flow:
+  //
+  //   1. Open-PWDatasource       — authenticate and connect
+  //   2. Resolve the document's folder (if DocumentGuid supplied)
+  //      Get-PWDocumentsByGuid / Get-PWDocument → document.FolderGuid
+  //   3. Resolve the Application → Managed Workspace Profile
+  //      Get-PWApplication (by numeric ApplicationId)
+  //   4. Get all CSBs for the profile (all levels)
+  //      The correct pwps_dab cmdlet for this step is documented at
+  //      https://powerwisescripting.blog/ — probe dynamically since the
+  //      exact cmdlet name varies across module versions.
+  //   5. Get folder-assigned CSBs (WorkSet/Discipline level)
+  //      Get-PWFoldersByGuids / Get-PWFolder — look up the target folder,
+  //      then retrieve CSBs assigned directly to it.
+  //
+  // Variable properties returned by pwps_dab:
+  //   .Name        — CFG variable name (e.g. "_USTN_CONFIGURATION")
+  //   .Operator    — assignment operator string: "=", ">", "<", ":"
+  //   .Value       — raw value as stored in PW (may be a PW folder path)
+  //   .ValueType   — "Literal" | "PWFolder" | "dms_project" | "LastDirPiece"
+  //   .IsLocked    — boolean; maps to %lock directive in generated .cfg
+  //
+  // Note: CSBs do not support preprocessor directives (%include, %if, etc.).
+  // The only "directive" produced from a CSB is the %level header and %lock
+  // lines, both of which are generated by csbToCfgContent() in TypeScript.
 
   const script = `
-param($Server, $Datasource, $Username, $Password, $ApplicationId, $FolderGuid)
-Import-Module ${moduleName} -ErrorAction Stop
-$secPass = ConvertTo-SecureString $Password -AsPlainText -Force
-$creds = New-Object System.Management.Automation.PSCredential($Username, $secPass)
-Open-PWDatasource -Server $Server -Datasource $Datasource -Credential $creds -ErrorAction Stop | Out-Null
+param($Server, $Datasource, $Username, $Password, $ApplicationId, $FolderGuid, $DocumentGuid)
+Import-Module "${moduleName}" -ErrorAction Stop
 
-$csbs = @()
+# ── Authentication ─────────────────────────────────────────────────────────────
+# pwps_dab supports two login patterns depending on version:
+#
+#   New-PWLogin (preferred, modern):
+#     -ProjectWiseServer "server:datasource"
+#     The server part is the PW server hostname WITHOUT the -ws suffix.
+#     The datasource is the name configured in ProjectWise Administrator.
+#     Combined format: "server.company.com:MyDatasource"
+#
+#   Open-PWDatasource (legacy):
+#     -Server hostname  -Datasource name  -Credential $creds
+#
+# We probe for New-PWLogin first (as the blog documents it as the current API).
 
-# Primary: CSBs from the Managed Workspace Profile assigned to the Application
+$loginCmdlet = @('New-PWLogin','Open-PWDatasource') |
+  Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+  Select-Object -First 1
+
+if (-not $loginCmdlet) {
+  throw "No login cmdlet found in module ${moduleName}. Expected 'New-PWLogin' or 'Open-PWDatasource'."
+}
+
+if ($loginCmdlet -eq 'New-PWLogin') {
+  # "server:datasource" — $Server is already the hostname without -ws suffix (stripped by TS).
+  # $Datasource is the name configured in ProjectWise Administrator.
+  New-PWLogin -ProjectWiseServer "$Server:$Datasource" -UserName $Username -Password $Password -ErrorAction Stop | Out-Null
+} else {
+  $secPass = ConvertTo-SecureString $Password -AsPlainText -Force
+  $creds   = New-Object System.Management.Automation.PSCredential($Username, $secPass)
+  Open-PWDatasource -Server $Server -Datasource $Datasource -Credential $creds -ErrorAction Stop | Out-Null
+}
+
+# ── Get the PW working directory for this datasource ──────────────────────────
+# The working directory is the local folder where PW copies out checked-out
+# files. It is needed for PW_WORKDIR seeding and for DMS_PROJECT() resolution.
+# pwps_dab exposes this via the datasource info object.
+$pwWorkingDir = ''
+$dsCmdlet = @('Get-PWCurrentDatasource','Get-PWDatasource','Get-PWDatasourceProperties') |
+  Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+  Select-Object -First 1
+
+if ($dsCmdlet) {
+  try {
+    $dsInfo = & $dsCmdlet -ErrorAction SilentlyContinue
+    $pwWorkingDir = [string]($dsInfo.WorkingDirectory ??
+                             $dsInfo.LocalWorkingDirectory ??
+                             $dsInfo.LocalWorkDir ??
+                             $dsInfo.WorkDir ?? '')
+  } catch { $pwWorkingDir = '' }
+}
+
+# Fall back to the standard ProjectWise working directory convention:
+#   %LOCALAPPDATA%\Bentley\ProjectWise\<datasource>\working\
+if (-not $pwWorkingDir) {
+  $localApp = [Environment]::GetFolderPath('LocalApplicationData')
+  $pwWorkingDir = Join-Path $localApp "Bentley\ProjectWise\$Datasource\working"
+}
+
+# ── Diagnostic: list available CSB-related cmdlets to stderr ─────────────────
+$availableCsbCmdlets = Get-Command -Module "${moduleName}" |
+  Where-Object { $_.Name -match 'CSB|ConfigBlock|ConfigurationBlock|ManagedWorkspace|WorkspaceProfile' } |
+  Select-Object -ExpandProperty Name
+if ($availableCsbCmdlets) {
+  [Console]::Error.WriteLine("Available CSB cmdlets: " + ($availableCsbCmdlets -join ", "))
+} else {
+  [Console]::Error.WriteLine("No CSB-specific cmdlets found in module ${moduleName}")
+}
+[Console]::Error.WriteLine("Login: $loginCmdlet | WorkingDir: $pwWorkingDir")
+
+# ── If DocumentGuid provided, resolve it to a FolderGuid ─────────────────────
+# Some workflows start from a selected document rather than a folder.
+# pwps_dab exposes Get-PWDocumentsByGuid (or Get-PWDocument) for this.
+if ($DocumentGuid -and -not $FolderGuid) {
+  $docCmdlet = @('Get-PWDocumentsByGuid','Get-PWDocument','Get-PWDocumentByGuid') |
+    Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+    Select-Object -First 1
+  if ($docCmdlet) {
+    $doc = & $docCmdlet -Guid $DocumentGuid -ErrorAction SilentlyContinue
+    if ($doc) {
+      # FolderGuid is exposed as .FolderGuid, .ProjectGuid, or .ParentGuid depending on version
+      $FolderGuid = $doc.FolderGuid ?? $doc.ProjectGuid ?? $doc.ParentGuid
+      [Console]::Error.WriteLine("Resolved DocumentGuid to FolderGuid: $FolderGuid")
+    }
+  } else {
+    [Console]::Error.WriteLine("No document-lookup cmdlet found; DocumentGuid resolution skipped")
+  }
+}
+
+$csbs = [System.Collections.Generic.List[object]]::new()
+
+# ── Primary: CSBs via Managed Workspace Profile assigned to the Application ──
+# The Application is the correct anchor for the full CSB set (Predefined through
+# WorkSpace levels). pwps_dab provides cmdlets to navigate:
+#   Application → Managed Workspace Profile → CSBs
+# The exact cmdlet names depend on the installed version of pwps_dab.
 if ($ApplicationId) {
-  $app = Get-PWApplication -Id $ApplicationId -ErrorAction SilentlyContinue
+  # Find the Application object by its numeric ID
+  $appCmdlet = @('Get-PWApplications','Get-PWApplication') |
+    Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+    Select-Object -First 1
+  $app = $null
+  if ($appCmdlet) {
+    $app = & $appCmdlet -ErrorAction SilentlyContinue |
+           Where-Object { $_.Id -eq $ApplicationId -or $_.InstanceId -eq $ApplicationId } |
+           Select-Object -First 1
+  }
+
   if ($app) {
-    $profile = Get-PWManagedWorkspaceProfile -Application $app -ErrorAction SilentlyContinue
-    if ($profile) {
-      $csbs += Get-PWConfigurationBlock -ManagedWorkspaceProfile $profile -AllLevels -ErrorAction SilentlyContinue
+    # Navigate Application → Managed Workspace Profile → CSBs
+    # Probe for the profile-retrieval cmdlet (naming varies across module versions)
+    $profileCmdlet = @(
+      'Get-PWManagedWorkspaceProfile',
+      'Get-PWApplicationManagedWorkspaceProfile',
+      'Get-PWWorkspaceProfile'
+    ) | Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+        Select-Object -First 1
+
+    $csbCmdlet = @(
+      'Get-PWConfigurationBlock',
+      'Get-PWCSB',
+      'Get-PWConfigurationSetBehavior',
+      'Get-PWWorkspaceCSB'
+    ) | Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+        Select-Object -First 1
+
+    if ($profileCmdlet -and $csbCmdlet) {
+      $profile = & $profileCmdlet -Application $app -ErrorAction SilentlyContinue
+      if ($profile) {
+        $fetched = & $csbCmdlet -ManagedWorkspaceProfile $profile -AllLevels -ErrorAction SilentlyContinue
+        if ($fetched) { $csbs.AddRange(@($fetched)) }
+      }
+    } elseif ($csbCmdlet) {
+      # Some versions allow direct Application → CSB retrieval
+      $fetched = & $csbCmdlet -Application $app -AllLevels -ErrorAction SilentlyContinue
+      if ($fetched) { $csbs.AddRange(@($fetched)) }
+    } else {
+      [Console]::Error.WriteLine("Could not find Managed Workspace Profile or CSB retrieval cmdlet in ${moduleName}")
     }
+  } else {
+    [Console]::Error.WriteLine("Application ID '$ApplicationId' not found via $appCmdlet")
   }
 }
 
-# Secondary: WorkSet/Project CSBs assigned directly to the PW folder
+# ── Secondary: folder-assigned CSBs (WorkSet / Discipline level) ──────────────
+# CSBs can be assigned directly to a PW folder (Work Area) in PW Administrator.
+# These are typically WorkSet and Discipline level blocks.
 if ($FolderGuid) {
-  $folder = Get-PWFolder -Guid $FolderGuid -ErrorAction SilentlyContinue
-  if ($folder) {
-    $csbs += Get-PWConfigurationBlock -Project $folder -ErrorAction SilentlyContinue
+  # Probe for folder-lookup cmdlet (naming varies)
+  $folderCmdlet = @('Get-PWFoldersByGuids','Get-PWFolderByGuid','Get-PWFolder') |
+    Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+    Select-Object -First 1
+
+  $csbCmdlet = @(
+    'Get-PWConfigurationBlock',
+    'Get-PWCSB',
+    'Get-PWConfigurationSetBehavior',
+    'Get-PWWorkspaceCSB'
+  ) | Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+      Select-Object -First 1
+
+  $folder = $null
+  if ($folderCmdlet) {
+    $folder = & $folderCmdlet -Guid $FolderGuid -ErrorAction SilentlyContinue
+    if (-not $folder) {
+      $folder = & $folderCmdlet -ErrorAction SilentlyContinue |
+                Where-Object { $_.Guid -eq $FolderGuid -or $_.InstanceId -eq $FolderGuid } |
+                Select-Object -First 1
+    }
+  }
+
+  if ($folder -and $csbCmdlet) {
+    # Try Project/Folder parameter variants used by different pwps_dab versions
+    $fetched = & $csbCmdlet -Project $folder -ErrorAction SilentlyContinue
+    if (-not $fetched) {
+      $fetched = & $csbCmdlet -Folder $folder -ErrorAction SilentlyContinue
+    }
+    if (-not $fetched) {
+      $fetched = & $csbCmdlet -WorkArea $folder -ErrorAction SilentlyContinue
+    }
+    if ($fetched) { $csbs.AddRange(@($fetched)) }
+  } elseif (-not $folder) {
+    [Console]::Error.WriteLine("Could not resolve FolderGuid '$FolderGuid' to a folder object")
   }
 }
 
-$result = @()
-foreach ($csb in ($csbs | Select-Object -Unique)) {
-  $vars = @()
-  foreach ($v in $csb.Variables) {
-    $vars += @{
-      Name      = $v.Name
-      Operator  = $v.Operator
-      Value     = $v.Value
-      ValueType = if ($v.ValueType) { $v.ValueType.ToString() } else { 'Literal' }
-      Locked    = [bool]$v.IsLocked
-    }
+# ── Serialise CSBs to JSON ────────────────────────────────────────────────────
+# Each CSB exposes:
+#   .Id / .CsbId     — numeric database ID
+#   .Name            — display name
+#   .Description     — optional description
+#   .Level           — CsbLevel enum or integer (0-9) or string
+#   .Variables       — collection of CsbVariable objects
+#
+# Each Variable exposes:
+#   .Name            — CFG variable name
+#   .Operator        — string "=" | ">" | "<" | ":"
+#   .Value           — raw value string (may be PW logical path for PWFolder type)
+#   .ValueType       — enum/string: Literal | PWFolder | dms_project | LastDirPiece
+#   .IsLocked / .Locked — boolean; if true, emit %lock directive after assignment
+#
+$levelNames = @('Predefined','Global','Application','Customer','Site','WorkSpace','WorkSet','Discipline','Role','User')
+
+$result = [System.Collections.Generic.List[object]]::new()
+$seenIds = [System.Collections.Generic.HashSet[int]]::new()
+
+foreach ($csb in $csbs) {
+  $csbId = [int]($csb.Id ?? $csb.CsbId ?? 0)
+  if (-not $seenIds.Add($csbId)) { continue }  # deduplicate
+
+  # Level: handle integer index, enum .Value, or string
+  $rawLevel = $csb.Level
+  $levelStr = if ($rawLevel -is [int]) {
+    if ($rawLevel -ge 0 -and $rawLevel -lt $levelNames.Count) { $levelNames[$rawLevel] } else { 'Global' }
+  } elseif ($rawLevel -ne $null) {
+    $s = $rawLevel.ToString()
+    # If the enum ToString() produces an integer string, map it
+    $parsed = 0
+    if ([int]::TryParse($s, [ref]$parsed)) {
+      if ($parsed -ge 0 -and $parsed -lt $levelNames.Count) { $levelNames[$parsed] } else { 'Global' }
+    } else { $s }
+  } else { 'Global' }
+
+  $vars = [System.Collections.Generic.List[object]]::new()
+  $variableCollection = $csb.Variables ?? $csb.VariableSet ?? @()
+  foreach ($v in $variableCollection) {
+    $vtRaw = $v.ValueType
+    $vtStr = if ($vtRaw -ne $null) { $vtRaw.ToString() } else { 'Literal' }
+
+    # .IsLocked and .Locked are both used across pwps_dab versions
+    $isLocked = [bool]($v.IsLocked ?? $v.Locked ?? $false)
+
+    $vars.Add(@{
+      Name      = [string]($v.Name ?? '')
+      Operator  = [string]($v.Operator ?? '=')
+      Value     = [string]($v.Value ?? '')
+      ValueType = $vtStr
+      Locked    = $isLocked
+    })
   }
-  $result += @{
-    Id          = $csb.Id
-    Name        = $csb.Name
-    Description = $csb.Description
-    Level       = $csb.Level.ToString()
-    Variables   = $vars
-    LinkedIds   = @($csb.LinkedCsbIds)
-  }
+
+  $result.Add(@{
+    Id          = $csbId
+    Name        = [string]($csb.Name ?? '')
+    Description = [string]($csb.Description ?? '')
+    Level       = $levelStr
+    Variables   = $vars.ToArray()
+    LinkedIds   = @()   # CSB linking is not exposed via pwps_dab property; handled by ordering
+  })
 }
-$result | ConvertTo-Json -Depth 10
+
+# Output a wrapper object so the TypeScript caller can read both the CSBs and the
+# PW working directory in one JSON parse. The WorkingDir is used to seed PW_WORKDIR
+# in the master .tmp, which is the actual local working directory ProjectWise uses
+# for checked-out files (not a temp directory).
+@{
+  WorkingDir = $pwWorkingDir
+  Csbs       = @($result)
+} | ConvertTo-Json -Depth 10
 `;
 
   const tempScript = path.join(os.tmpdir(), `pw-csb-mod-${Date.now()}.ps1`);
@@ -518,15 +801,31 @@ $result | ConvertTo-Json -Depth 10
       '-Username', conn.username,
       '-Password', conn.credential,
       ...(ctx.applicationInstanceId ? ['-ApplicationId', ctx.applicationInstanceId] : []),
-      ...(ctx.folderGuid ? ['-FolderGuid', ctx.folderGuid] : []),
-    ], { timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
+      ...(ctx.folderGuid            ? ['-FolderGuid',     ctx.folderGuid]            : []),
+      ...(ctx.documentGuid          ? ['-DocumentGuid',   ctx.documentGuid]           : []),
+    ], { timeout: 45000, maxBuffer: 10 * 1024 * 1024 });
 
-    const out = result.stdout?.toString() ?? '';
-    if (!out.trim()) throw new Error(result.stderr?.toString() ?? 'No output from PowerShell');
+    const out  = result.stdout?.toString() ?? '';
+    const err  = result.stderr?.toString() ?? '';
+    if (err.trim()) {
+      // stderr carries diagnostic messages written by the script (not fatal errors)
+      // Surface them to the caller via a thrown error only if stdout is also empty.
+      if (!out.trim()) {
+        throw new Error(`PowerShell module error:\n${err}`);
+      }
+    }
+    if (!out.trim()) {
+      throw new Error(err || 'No output from PowerShell module script');
+    }
     return parsePowerShellCsbJson(out);
   } finally {
     try { fs.unlinkSync(tempScript); } catch { /* ignore */ }
   }
+}
+
+/** Thin wrapper that discards the working-dir half — used by backends that don't return it. */
+function parsePowerShellCsbJsonCsbsOnly(json: string): CsbBlock[] {
+  return parsePowerShellCsbJson(json).csbs;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -565,7 +864,7 @@ async function readCsbsViaDmscli(conn: PwConnection, ctx: ManagedWorkspaceContex
     if (result.status !== 0 || !out.trim()) {
       throw new Error(result.stderr?.toString() || 'dmscli script produced no output');
     }
-    return parsePowerShellCsbJson(out);
+    return parsePowerShellCsbJsonCsbsOnly(out);
   } finally {
     try { fs.unlinkSync(tempScript); } catch { /* ignore */ }
   }
@@ -582,20 +881,44 @@ function buildDmscliScript(
 
   return `
 # dmscli.dll P/Invoke — reads Managed Workspace CSBs from ProjectWise
-# Correct entry point: aaApi_SelectManagedWorkspacesByApplication
-# (not by project — applications are where the MW profile is assigned)
+#
+# Entry points:
+#   Application → aaApi_SelectManagedWorkspacesByApplication → CSBs
+#   Folder/Doc  → aaApi_SelectProjectByGuid → numeric ID
+#               → aaApi_SelectManagedWorkspacesByProject → CSBs
+#   Document    → aaApi_GetDocumentNumericProperty(PROP_PROJECTID) → numeric project ID
+#               → aaApi_SelectManagedWorkspacesByProject → CSBs
 
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 
 public class DmsCli {
+  // ── Session ──────────────────────────────────────────────────────────────
   [DllImport(@"${dllPath}")]
   public static extern bool aaApi_Login(string datasource, string user, string password, string server);
   [DllImport(@"${dllPath}")]
   public static extern bool aaApi_Logout();
 
-  // Managed Workspace Profile selection
+  // ── Project (folder) lookup — GUID → numeric ID ──────────────────────────
+  // aaApi_SelectProjectByGuid selects a single project row by its GUID.
+  // Property IDs for project buffer: 1=NumericId, 2=ParentId, 3=Name
+  [DllImport(@"${dllPath}")]
+  public static extern IntPtr aaApi_SelectProjectByGuid(string guid);
+  [DllImport(@"${dllPath}")]
+  public static extern int aaApi_GetProjectNumericProperty(IntPtr hBuf, int propId, int row);
+  [DllImport(@"${dllPath}")]
+  public static extern IntPtr aaApi_GetProjectStringProperty(IntPtr hBuf, int propId, int row);
+
+  // ── Document lookup — GUID → numeric project ID ──────────────────────────
+  // aaApi_SelectDocumentByGuid selects a document row by its GUID.
+  // Property IDs for document buffer: 1=DocId, 2=ProjectId (numeric), ...
+  [DllImport(@"${dllPath}")]
+  public static extern IntPtr aaApi_SelectDocumentByGuid(string guid);
+  [DllImport(@"${dllPath}")]
+  public static extern int aaApi_GetDocumentNumericProperty(IntPtr hBuf, int propId, int row);
+
+  // ── Managed Workspace Profile selection ──────────────────────────────────
   [DllImport(@"${dllPath}")]
   public static extern IntPtr aaApi_SelectManagedWorkspacesByApplication(int applicationId);
   [DllImport(@"${dllPath}")]
@@ -605,7 +928,7 @@ public class DmsCli {
   [DllImport(@"${dllPath}")]
   public static extern IntPtr aaApi_GetManagedWorkspaceStringProperty(IntPtr hBuf, int propId, int row);
 
-  // Configuration Settings Block (CSB) selection — by managed workspace profile ID
+  // ── Configuration Settings Block (CSB) selection ─────────────────────────
   [DllImport(@"${dllPath}")]
   public static extern IntPtr aaApi_SelectConfigurationBlocksByWorkspace(int workspaceProfileId);
   [DllImport(@"${dllPath}")]
@@ -613,7 +936,9 @@ public class DmsCli {
   [DllImport(@"${dllPath}")]
   public static extern IntPtr aaApi_GetConfigBlockStringProperty(IntPtr hBuf, int propId, int row);
 
-  // CSB variable selection
+  // ── CSB variable selection ────────────────────────────────────────────────
+  // Variables are the name=value assignments within a CSB.
+  // The %lock directive is represented by the Locked property (propId 4).
   [DllImport(@"${dllPath}")]
   public static extern IntPtr aaApi_SelectConfigBlockVariables(int configBlockId);
   [DllImport(@"${dllPath}")]
@@ -621,7 +946,7 @@ public class DmsCli {
   [DllImport(@"${dllPath}")]
   public static extern IntPtr aaApi_GetConfigBlockVarStringProperty(IntPtr hBuf, int propId, int row);
 
-  // Buffer utilities
+  // ── Buffer utilities ──────────────────────────────────────────────────────
   [DllImport(@"${dllPath}")]
   public static extern int aaApi_GetBufferItemCount(IntPtr hBuf);
   [DllImport(@"${dllPath}")]
@@ -634,37 +959,50 @@ public class DmsCli {
 }
 "@ -ErrorAction Stop
 
-# Property ID constants (from dmscli.h / ProjectWise SDK)
+# ── Property ID constants (from dmscli.h / ProjectWise SDK) ──────────────────
+# CSB block properties
 $CFGBLK_PROP_ID          = 1
 $CFGBLK_PROP_NAME        = 3
 $CFGBLK_PROP_DESCRIPTION = 4
-# Level values (integer): 0=Predefined 1=Global 2=Application 3=Customer 4=Site
+# Level integer encoding: 0=Predefined 1=Global 2=Application 3=Customer 4=Site
 #                         5=WorkSpace  6=WorkSet 7=Discipline  8=Role     9=User
 $CFGBLK_PROP_LEVEL       = 5
+
+# CSB variable properties
 $CFGVAR_PROP_NAME        = 1
 $CFGVAR_PROP_VALUE       = 2
-$CFGVAR_PROP_OPERATOR    = 3   # 0== 1=> 2=< 3=:
-$CFGVAR_PROP_LOCKED      = 4   # 0=false 1=true
-$CFGVAR_PROP_VALUETYPE   = 5   # 0=Literal 1=PWFolder 2=dms_project 3=LastDirPiece
+$CFGVAR_PROP_OPERATOR    = 3   # 0==  1=>  2=<  3=:
+$CFGVAR_PROP_LOCKED      = 4   # 0=not locked  1=locked (%lock directive)
+$CFGVAR_PROP_VALUETYPE   = 5   # 0=Literal  1=PWFolder  2=dms_project  3=LastDirPiece
+
+# Managed Workspace Profile property
 $MWSP_PROP_ID            = 1
+
+# Project (folder) property
+$PROJ_PROP_ID            = 1   # numeric project ID
+
+# Document property
+$DOC_PROP_PROJECTID      = 2   # numeric ID of the parent project/folder
 
 $levelNames = @('Predefined','Global','Application','Customer','Site','WorkSpace','WorkSet','Discipline','Role','User')
 $opNames    = @('=','>','<',':')
 $vtNames    = @('Literal','PWFolder','dms_project','LastDirPiece')
 
-function Get-CsbsForProfileId($profileId) {
+# ── Helper: read all CSBs for a given Managed Workspace Profile ID ────────────
+function Get-CsbsForProfileId([int]$profileId) {
   $csbBuf = [DmsCli]::aaApi_SelectConfigurationBlocksByWorkspace($profileId)
   $count  = if ($csbBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_GetBufferItemCount($csbBuf) } else { 0 }
-  $items  = @()
+  $items  = [System.Collections.Generic.List[object]]::new()
   for ($ci = 0; $ci -lt $count; $ci++) {
     $csbId    = [DmsCli]::aaApi_GetConfigBlockNumericProperty($csbBuf, $CFGBLK_PROP_ID, $ci)
     $csbName  = [DmsCli]::GetStr([DmsCli]::aaApi_GetConfigBlockStringProperty($csbBuf, $CFGBLK_PROP_NAME, $ci))
     $csbDesc  = [DmsCli]::GetStr([DmsCli]::aaApi_GetConfigBlockStringProperty($csbBuf, $CFGBLK_PROP_DESCRIPTION, $ci))
     $levelIdx = [DmsCli]::aaApi_GetConfigBlockNumericProperty($csbBuf, $CFGBLK_PROP_LEVEL, $ci)
     $levelStr = if ($levelIdx -ge 0 -and $levelIdx -lt $levelNames.Count) { $levelNames[$levelIdx] } else { 'Global' }
+
     $varBuf   = [DmsCli]::aaApi_SelectConfigBlockVariables($csbId)
     $varCount = if ($varBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_GetBufferItemCount($varBuf) } else { 0 }
-    $vars = @()
+    $vars = [System.Collections.Generic.List[object]]::new()
     for ($vi = 0; $vi -lt $varCount; $vi++) {
       $vName  = [DmsCli]::GetStr([DmsCli]::aaApi_GetConfigBlockVarStringProperty($varBuf, $CFGVAR_PROP_NAME, $vi))
       $vVal   = [DmsCli]::GetStr([DmsCli]::aaApi_GetConfigBlockVarStringProperty($varBuf, $CFGVAR_PROP_VALUE, $vi))
@@ -673,53 +1011,101 @@ function Get-CsbsForProfileId($profileId) {
       $vtIdx  = [DmsCli]::aaApi_GetConfigBlockVarNumericProperty($varBuf, $CFGVAR_PROP_VALUETYPE, $vi)
       $opStr  = if ($opIdx -ge 0 -and $opIdx -lt $opNames.Count) { $opNames[$opIdx] } else { '=' }
       $vtStr  = if ($vtIdx -ge 0 -and $vtIdx -lt $vtNames.Count) { $vtNames[$vtIdx] } else { 'Literal' }
-      $vars += @{ Name=$vName; Operator=$opStr; Value=$vVal; ValueType=$vtStr; Locked=$locked }
+      $vars.Add(@{ Name=$vName; Operator=$opStr; Value=$vVal; ValueType=$vtStr; Locked=$locked })
     }
     if ($varBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_FreeBuffer($varBuf) | Out-Null }
-    $items += @{ Id=$csbId; Name=$csbName; Description=$csbDesc; Level=$levelStr; Variables=$vars; LinkedIds=@() }
+    $items.Add(@{ Id=$csbId; Name=$csbName; Description=$csbDesc; Level=$levelStr; Variables=$vars.ToArray(); LinkedIds=@() })
   }
   if ($csbBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_FreeBuffer($csbBuf) | Out-Null }
-  return ,$items
+  return ,$items.ToArray()
 }
 
-$result = @()
+# ── Helper: resolve a GUID to a numeric project ID via aaApi_SelectProjectByGuid
+function Get-ProjectNumericId([string]$guid) {
+  $buf = [DmsCli]::aaApi_SelectProjectByGuid($guid)
+  if ($buf -eq [IntPtr]::Zero) { return -1 }
+  $id = [DmsCli]::aaApi_GetProjectNumericProperty($buf, $PROJ_PROP_ID, 0)
+  [DmsCli]::aaApi_FreeBuffer($buf) | Out-Null
+  return $id
+}
+
+# ── Helper: resolve a document GUID to a numeric project ID ──────────────────
+function Get-ProjectIdFromDocument([string]$docGuid) {
+  $buf = [DmsCli]::aaApi_SelectDocumentByGuid($docGuid)
+  if ($buf -eq [IntPtr]::Zero) { return -1 }
+  $projId = [DmsCli]::aaApi_GetDocumentNumericProperty($buf, $DOC_PROP_PROJECTID, 0)
+  [DmsCli]::aaApi_FreeBuffer($buf) | Out-Null
+  return $projId
+}
+
+$result = [System.Collections.Generic.List[object]]::new()
+$seenIds = [System.Collections.Generic.HashSet[int]]::new()
+
 try {
   $ok = [DmsCli]::aaApi_Login("${conn.datasource}", "${conn.username}", "${conn.credential}", "${serverHost}")
   if (-not $ok) { throw "Login failed for datasource ${conn.datasource}" }
 
-  # ── Application-level CSBs (Predefined through WorkSpace) ────────────────
-  # This is the correct starting point: the Managed Workspace Profile is
-  # assigned to the Application, not to a folder.
+  # ── Application-level CSBs (Predefined → WorkSpace) ──────────────────────
+  # The Managed Workspace Profile is assigned to the Application. This gives us
+  # all global/predefined/workspace-level CSBs.
 ${ctx.applicationInstanceId ? `
   $appId = [int]"${ctx.applicationInstanceId}"
   $wsBuf = [DmsCli]::aaApi_SelectManagedWorkspacesByApplication($appId)
   $wsCount = if ($wsBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_GetBufferItemCount($wsBuf) } else { 0 }
   for ($wi = 0; $wi -lt $wsCount; $wi++) {
     $profileId = [DmsCli]::aaApi_GetManagedWorkspaceNumericProperty($wsBuf, $MWSP_PROP_ID, $wi)
-    $result += Get-CsbsForProfileId $profileId
+    foreach ($csb in (Get-CsbsForProfileId $profileId)) {
+      if ($seenIds.Add($csb.Id)) { $result.Add($csb) }
+    }
   }
   if ($wsBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_FreeBuffer($wsBuf) | Out-Null }
 ` : `  # applicationInstanceId not provided — skipping Application-level CSBs`}
 
-  # ── WorkSet/Discipline CSBs from the document folder (if folderGuid given) ─
-  # These are CSBs directly assigned to the Project/folder in PW Administrator.
-  # Typically WorkSet and Discipline level.
-  #
-  # Note: aaApi_SelectManagedWorkspacesByProject expects a numeric project ID,
-  # not a GUID. We search all managed workspaces and filter by folder assignment.
-  # In practice, if the Application CSBs above already included WorkSet-level
-  # blocks this section may return duplicates — deduplication is done in JS.
+  # ── Document-derived folder CSBs ──────────────────────────────────────────
+  # If a document GUID was provided (user selected a document in the extension),
+  # resolve it to its parent folder's numeric project ID, then fetch WorkSet CSBs.
+${ctx.documentGuid ? `
+  $docProjId = Get-ProjectIdFromDocument "${ctx.documentGuid}"
+  if ($docProjId -gt 0) {
+    $docWsBuf = [DmsCli]::aaApi_SelectManagedWorkspacesByProject($docProjId)
+    $docWsCount = if ($docWsBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_GetBufferItemCount($docWsBuf) } else { 0 }
+    for ($wi = 0; $wi -lt $docWsCount; $wi++) {
+      $profileId = [DmsCli]::aaApi_GetManagedWorkspaceNumericProperty($docWsBuf, $MWSP_PROP_ID, $wi)
+      foreach ($csb in (Get-CsbsForProfileId $profileId)) {
+        if ($seenIds.Add($csb.Id)) { $result.Add($csb) }
+      }
+    }
+    if ($docWsBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_FreeBuffer($docWsBuf) | Out-Null }
+  }
+` : `  # documentGuid not provided — skipping document-derived folder CSBs`}
+
+  # ── Folder-assigned CSBs (WorkSet / Discipline level) ────────────────────
+  # CSBs can be assigned directly to a PW Work Area (folder) in PW Administrator.
+  # aaApi_SelectManagedWorkspacesByProject requires a numeric project ID.
+  # We resolve the GUID via aaApi_SelectProjectByGuid (added in PW SDK).
 ${ctx.folderGuid ? `
-  # TODO: resolve folderGuid to numeric ID via aaApi_SelectProject
-  # For now, rely on Application-level CSBs which typically include WorkSet blocks
-  # via the Managed Workspace profile configuration.
-` : `  # folderGuid not provided — skipping folder-level CSBs`}
+  $numericProjId = Get-ProjectNumericId "${ctx.folderGuid}"
+  if ($numericProjId -gt 0) {
+    $projWsBuf = [DmsCli]::aaApi_SelectManagedWorkspacesByProject($numericProjId)
+    $projWsCount = if ($projWsBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_GetBufferItemCount($projWsBuf) } else { 0 }
+    for ($wi = 0; $wi -lt $projWsCount; $wi++) {
+      $profileId = [DmsCli]::aaApi_GetManagedWorkspaceNumericProperty($projWsBuf, $MWSP_PROP_ID, $wi)
+      foreach ($csb in (Get-CsbsForProfileId $profileId)) {
+        if ($seenIds.Add($csb.Id)) { $result.Add($csb) }
+      }
+    }
+    if ($projWsBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_FreeBuffer($projWsBuf) | Out-Null }
+  } else {
+    [Console]::Error.WriteLine("Could not resolve folderGuid '${ctx.folderGuid}' to a numeric project ID via aaApi_SelectProjectByGuid")
+  }
+` : `  # folderGuid not provided — skipping folder-assigned CSBs`}
 
 } finally {
   [DmsCli]::aaApi_Logout() | Out-Null
 }
 
-$result | ConvertTo-Json -Depth 10
+# Wrap in array explicitly — ConvertTo-Json unwraps single-element collections otherwise
+@($result) | ConvertTo-Json -Depth 10
 `;
 }
 
@@ -843,19 +1229,25 @@ async function downloadAdditionalPwFolders(
 
 /**
  * Navigate the PW folder tree to find the folder at a logical path.
- * Handles paths like "\MyDS\Configuration\WorkSpaces\" by descending
- * segment-by-segment from the root project list.
+ *
+ * Handles PW logical path formats:
+ *  • @:\Configuration\WorkSpaces\     — @: is the datasource root marker
+ *  • \MyDatasource\Configuration\     — leading datasource name as first segment
+ *  • Configuration\WorkSpaces\        — relative path from repository root
+ *  • /Configuration/WorkSpaces/       — forward-slash variant
+ *
+ * The @: prefix is stripped before descent; the remaining path is matched
+ * segment-by-segment from the repository root folder list.
  */
 async function findFolderByPath(
   client: ProjectWiseClient,
   logicalPath: string,
   rootFolders: PwFolder[]
 ): Promise<PwFolder | null> {
-  const segments = logicalPath
-    .replace(/^[/\\]+/, '').replace(/[/\\]+$/, '')
-    .split(/[/\\]/)
-    .filter(Boolean);
+  // Strip the @: datasource-root prefix (PW logical path root marker)
+  const stripped = logicalPath.replace(/^@:[/\\]*/i, '').replace(/^[/\\]+/, '').replace(/[/\\]+$/, '');
 
+  const segments = stripped.split(/[/\\]/).filter(Boolean);
   if (segments.length === 0) return null;
 
   let currentLevel: PwFolder[] = rootFolders;
@@ -871,6 +1263,121 @@ async function findFolderByPath(
     }
   }
   return found;
+}
+
+/**
+ * After the initial PW folder downloads, scan all downloaded CFG/UCF/PCF files
+ * for %include directives that reference PW paths (starting with @:\ or @:/).
+ * Download any such folders that haven't been downloaded yet.
+ *
+ * This resolves the recursive include chain:
+ *   CSB → sets _USTN_CONFIGURATION = @:\Configuration\
+ *       → downloaded to dms00000/
+ *       → dms00000/WorkSpaces/MyWorkspace.cfg has:
+ *           %include @:\Configuration\Organization\*.cfg
+ *       → @:\Configuration\Organization\ is downloaded as dms00001/
+ *       → and so on until no new @: paths are found
+ *
+ * Also scans Literal-type CSB variable values for @: paths that should be
+ * downloaded (e.g. literal _USTN_CONFIGURATION assignments using @: syntax).
+ */
+async function resolveAtPathsRecursively(
+  client: ProjectWiseClient,
+  csbs: CsbBlock[],
+  workDir: string,
+  dmsPathMap: DmsPathMap,
+  messages: CsbExtractionResult['messages']
+): Promise<void> {
+  const seenPaths = new Set(
+    Object.values(dmsPathMap).map(e => normaliseAtPath(e.pwLogicalPath))
+  );
+
+  // Collect @: paths from Literal CSB variable values
+  const pending: string[] = [];
+  for (const csb of csbs) {
+    for (const v of csb.variables) {
+      if (v.value && isAtPath(v.value)) {
+        const n = normaliseAtPath(v.value);
+        if (!seenPaths.has(n)) { seenPaths.add(n); pending.push(v.value); }
+      }
+    }
+  }
+
+  // BFS: download folders, scan their CFG files for further @: includes
+  let batch = [...pending];
+  let pass = 0;
+  while (batch.length > 0 && pass < 10) { // safety limit
+    pass++;
+    const nextBatch: string[] = [];
+    for (const pwPath of batch) {
+      const dmsDir = await downloadPwFolderToDms(client, pwPath, workDir, dmsPathMap, messages);
+      if (!dmsDir) continue;
+
+      // Scan all downloaded CFG files for further @: %include paths
+      for (const file of walkLocalDir(dmsDir)) {
+        if (!/\.(cfg|ucf|pcf)$/i.test(file)) continue;
+        try {
+          const content = fs.readFileSync(file, 'utf8');
+          for (const atPath of extractAtPathsFromCfg(content)) {
+            const n = normaliseAtPath(atPath);
+            if (!seenPaths.has(n)) {
+              seenPaths.add(n);
+              nextBatch.push(atPath);
+            }
+          }
+        } catch { /* unreadable file — skip */ }
+      }
+    }
+    batch = nextBatch;
+  }
+  if (pass >= 10) {
+    messages.push({ level: 'warning', text: 'Stopped @: path resolution after 10 passes (possible cycle).' });
+  }
+}
+
+/** Returns true if a value string is a PW logical path using the @: root prefix. */
+function isAtPath(value: string): boolean {
+  return /^@:[/\\]/i.test(value);
+}
+
+/** Normalises a PW logical path for deduplication (lowercase, forward slashes, no trailing slash). */
+function normaliseAtPath(p: string): string {
+  return p.replace(/^@:[/\\]*/i, '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * Scan CFG file content for %include lines that reference @: paths.
+ * Returns all unique @: folder paths found.
+ */
+function extractAtPathsFromCfg(content: string): string[] {
+  const paths: string[] = [];
+  for (const line of content.split(/\r?\n/)) {
+    const stripped = line.replace(/#.*$/, '').trim();
+    // %include @:\Some\Path\ or %include @:\Some\Path\*.cfg
+    const m = stripped.match(/^%include\s+(@:[/\\][^*?\s]*)/i);
+    if (m) {
+      // Reduce to the folder part (strip filename/wildcard at end)
+      const raw = m[1];
+      const folder = raw.includes('*') || raw.includes('?')
+        ? raw.replace(/[/\\][^/\\]*$/, '') // strip last segment (filename/glob)
+        : raw;
+      if (folder) paths.push(folder);
+    }
+  }
+  return [...new Set(paths)];
+}
+
+/** Recursively list all files under a directory. */
+function walkLocalDir(dir: string): string[] {
+  const results: string[] = [];
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) results.push(...walkLocalDir(full));
+      else results.push(full);
+    }
+  } catch { /* ignore unreadable dirs */ }
+  return results;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -997,9 +1504,14 @@ export function buildMasterTmp(
   ctx: ManagedWorkspaceContext,
   dmsPathMap: DmsPathMap,
   workspaceName?: string,
-  worksetName?: string
+  worksetName?: string,
+  pwWorkingDir?: string
 ): string {
-  const fwdWorkDir = workDir.replace(/\\/g, '/');
+  // Use the real PW working directory if available (from pwps_dab datasource info).
+  // This is the local folder where ProjectWise copies out checked-out files, and is
+  // what PWE seeds as PW_WORKDIR. Fall back to the temp work directory otherwise.
+  const effectiveWorkDir = pwWorkingDir ?? workDir;
+  const fwdWorkDir = effectiveWorkDir.replace(/\\/g, '/');
   const fwdWsDir   = wsDir.replace(/\\/g, '/');
 
   const lines: string[] = [
@@ -1146,10 +1658,36 @@ function extractLastDirPiece(csbs: CsbBlock[], varName: string): string | undefi
 // Parsing helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function parsePowerShellCsbJson(json: string): CsbBlock[] {
+/**
+ * Parse the JSON produced by the Backend A and B PowerShell scripts.
+ *
+ * Handles two output formats:
+ *  - Legacy array:  [ { Id, Name, Level, Variables, ... }, ... ]
+ *  - Wrapper object: { WorkingDir: "...", Csbs: [ ... ] }
+ *
+ * The wrapper format is produced by the updated Backend A script so that the
+ * PW working directory (used for PW_WORKDIR seeding) can be passed back
+ * alongside the CSBs without a second round-trip.
+ */
+function parsePowerShellCsbJson(json: string): { csbs: CsbBlock[]; workingDir: string } {
   const clean = json.trim();
-  const data = JSON.parse(clean.startsWith('[') ? clean : `[${clean}]`);
-  return (Array.isArray(data) ? data : [data]).map((item: any) => ({
+  const raw = JSON.parse(clean);
+
+  // Detect wrapper object format
+  let csbArray: any[];
+  let workingDir = '';
+
+  if (Array.isArray(raw)) {
+    csbArray = raw;
+  } else if (raw && typeof raw === 'object' && (raw.Csbs ?? raw.csbs)) {
+    csbArray = raw.Csbs ?? raw.csbs ?? [];
+    workingDir = String(raw.WorkingDir ?? raw.workingDir ?? '');
+  } else {
+    // Single CSB object
+    csbArray = [raw];
+  }
+
+  const csbs = csbArray.map((item: any) => ({
     id: Number(item.Id ?? item.id ?? 0),
     name: String(item.Name ?? item.name ?? ''),
     description: String(item.Description ?? item.description ?? ''),
@@ -1162,7 +1700,9 @@ function parsePowerShellCsbJson(json: string): CsbBlock[] {
       locked: Boolean(v.Locked ?? v.locked ?? false),
     })),
     linkedCsbIds: Array.isArray(item.LinkedIds) ? item.LinkedIds.map(Number) : [],
-  }));
+  } as CsbBlock));
+
+  return { csbs, workingDir };
 }
 
 /**
