@@ -39,14 +39,24 @@ const CFG_VARIABLES: CfgVariable[] = [
   { name: 'MS_DESIGNSEED', category: 'ms', documentation: 'Path to the default seed DGN file used when creating new design files. Must be a specific file path.', example: 'MS_DESIGNSEED = $(_USTN_WORKSETSTANDARDS)Seed/seed3d.dgn' },
   { name: 'MS_RFDIR', category: 'ms', documentation: 'Search path(s) for reference files. Use > to append or < to prepend additional directories. Semicolon-separated.', example: 'MS_RFDIR > $(_USTN_WORKSETROOT)References/' },
   { name: 'MS_CELLLIST', category: 'ms', documentation: 'Search path(s) for cell libraries (.cel files). Use > to append directories.', example: 'MS_CELLLIST > $(_USTN_WORKSPACESTANDARDS)Cell/' },
+  { name: 'MS_CELL_SEEDFILE', category: 'ms', documentation: 'Seed file used when creating a new cell library.', example: 'MS_CELL_SEEDFILE = $(_USTN_WORKSPACESTANDARDS)Cell/cellseed.dgn' },
   { name: 'MS_DGNLIB', category: 'ms', documentation: 'Search path(s) for DGN library files (.dgnlib). Used for shared levels, styles, etc.', example: 'MS_DGNLIB > $(_USTN_WORKSPACESTANDARDS)Dgnlib/' },
   { name: 'MS_DGNLIBLIST', category: 'ms', documentation: 'Specific list of DGN library files to load (as opposed to MS_DGNLIB which is a search directory).', example: 'MS_DGNLIBLIST > $(_USTN_WORKSPACESTANDARDS)Dgnlib/levels.dgnlib' },
+  { name: 'MS_DGNLIBLIST_DRAWINGSEEDS', category: 'ms', documentation: 'Extended DGNLib list specifically for drawing seeds. Bentley notes this variable must also be represented in `MS_DGNLIBLIST`, and an initial `=` assignment can be used to cancel delivered out-of-box seed definitions before appending custom ones.', example: 'MS_DGNLIBLIST > $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Sheet Seeds/*.dgnlib\nMS_DGNLIBLIST_DRAWINGSEEDS = $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Sheet Seeds/*.dgnlib\nMS_DGNLIBLIST_DRAWINGSEEDS > $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Sheet Seeds/Details/*.dgnlib' },
+  { name: 'MS_DGNLIBLIST_DISPLAYSTYLES', category: 'ms', documentation: 'Extended DGNLib list specifically for display styles. Once an extended `MS_DGNLIBLIST_*` variable is defined, MicroStation stops reading that category from the base `MS_DGNLIBLIST`, so use the extension consistently across the workspace.', example: 'MS_DGNLIBLIST_DISPLAYSTYLES = $(_USTN_SYSTEMROOT)Dgnlib/DrawComp/en/*.dgnlib\nMS_DGNLIBLIST_DISPLAYSTYLES < $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Display Styles/*.dgnlib' },
+  { name: 'MS_DGNLIBLIST_ELEMENTTEMPLATES', category: 'ms', documentation: 'Extended DGNLib list specifically for element templates. Prefer this over a generic `MS_DGNLIBLIST` entry when you want element-template-only definitions.', example: 'MS_DGNLIBLIST_ELEMENTTEMPLATES > $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Element Templates/*.dgnlib' },
+  { name: 'MS_DGNLIBLIST_ITEMTYPES', category: 'ms', documentation: 'Extended DGNLib list specifically for Item Types definitions.', example: 'MS_DGNLIBLIST_ITEMTYPES > $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Item Types/*.dgnlib' },
+  { name: 'MS_DGNLIBLIST_PRINTING', category: 'ms', documentation: 'Extended DGNLib list specifically for printing definitions such as print styles.', example: 'MS_DGNLIBLIST_PRINTING > $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Printing/Print_Styles.dgnlib' },
   { name: 'MS_SYSTEMDGNLIBLIST', category: 'ms', documentation: 'System-level DGN library list (higher priority than MS_DGNLIBLIST).', valueHint: 'Path to .dgnlib file' },
   { name: 'MS_PLOTFILES', category: 'ms', documentation: 'Default output directory for plot/print files.', example: 'MS_PLOTFILES = $(_USTN_WORKSETROOT)Output/Plots/' },
+  { name: 'MS_PLTFILES', category: 'ms', documentation: 'Plot file output directory used by MicroStation print workflows. Bentley examples often point this to `$(MS_BACKUP)`.', example: 'MS_PLTFILES = $(MS_BACKUP)' },
   { name: 'MS_PLTCFG', category: 'ms', documentation: 'Search path for printer driver (.pltcfg) files.', example: 'MS_PLTCFG > $(_USTN_WORKSPACESTANDARDS)Plot/' },
+  { name: 'MS_PLTCFG_PATH', category: 'ms', documentation: 'Search path for print configuration (`.pltcfg`) files. Commonly used in current ORD workspace examples.', example: 'MS_PLTCFG_PATH = $(CIVIL_ORGANIZATION_STANDARDS)Printing/Plot_Config/' },
   { name: 'MS_LINESTYLE', category: 'ms', documentation: 'Search path(s) for custom line style resource files.', example: 'MS_LINESTYLE > $(_USTN_WORKSPACESTANDARDS)Linestyle/' },
   { name: 'MS_MDLAPPS', category: 'ms', documentation: 'Search path(s) for MDL applications to load.', example: 'MS_MDLAPPS > $(_USTN_WORKSPACEROOT)Mdlapps/' },
   { name: 'MS_MACROS', category: 'ms', documentation: 'Search path(s) for VBA macro files.', example: 'MS_MACROS > $(_USTN_WORKSPACEROOT)Macros/' },
+  { name: 'MS_VBASEARCHDIRECTORIES', category: 'ms', documentation: 'ProjectWise VBA search directories. Bentley recommends defining this so ProjectWise copies out the extra files a macro needs.', example: 'MS_VBASEARCHDIRECTORIES > $(CIVIL_ORGANIZATION_STANDARDS)Macros/' },
+  { name: 'MS_VBACOPYOUT', category: 'ms', documentation: 'ProjectWise copy-out list for VBA-related content. Often set equal to `$(MS_VBASEARCHDIRECTORIES)` and extended for report macro folders.', example: 'MS_VBACOPYOUT = $(MS_VBASEARCHDIRECTORIES)' },
   { name: 'MS_PATTERN', category: 'ms', documentation: 'Search path for area pattern cell libraries.', example: 'MS_PATTERN > $(_USTN_WORKSPACESTANDARDS)Pattern/' },
   { name: 'MS_DEF', category: 'ms', documentation: 'Default directory for design files shown in File Open dialog.', example: 'MS_DEF = $(_USTN_WORKSETDATA)' },
   { name: 'MS_GUIDATA', category: 'ms', documentation: 'Search path for GUI customization data (toolboxes, tool settings, etc.).', example: 'MS_GUIDATA > $(_USTN_WORKSPACEROOT)Guidata/' },
@@ -54,7 +64,7 @@ const CFG_VARIABLES: CfgVariable[] = [
   { name: 'MS_DWGSEED', category: 'ms', documentation: 'Path to seed DWG file used when creating new DWG files.', example: 'MS_DWGSEED = $(_USTN_WORKSETSTANDARDS)Seed/seed.dwg' },
   { name: 'MS_DWGDATA', category: 'ms', documentation: 'Configuration data for DWG file handling.', valueHint: 'Path to DWG data directory' },
   { name: 'MS_BACKUP', category: 'ms', documentation: 'Directory for automatic backup files.', example: 'MS_BACKUP = $(_USTN_WORKSETROOT)Backup/' },
-  { name: 'MS_FILEHISTORY', category: 'ms', documentation: 'Controls file history feature (0=off, 1=on).', valueHint: '0 or 1' },
+  { name: 'MS_FILEHISTORY', category: 'ms', documentation: 'Controls whether documents opened from ProjectWise Explorer are added to the MicroStation MRU (most recently used) file list. In integrated MicroStation, commented out behaves like 1.', valueHint: '0 or 1' },
   { name: 'MS_PRINT', category: 'ms', documentation: 'Search path for print/plot configuration.', example: 'MS_PRINT > $(_USTN_WORKSPACESTANDARDS)Print/' },
   { name: 'MS_PRINT_ORGANIZER', category: 'ms', documentation: 'Search path for Print Organizer print set (.pset) files.', example: 'MS_PRINT_ORGANIZER > $(_USTN_WORKSPACESTANDARDS)PrintOrganizer/' },
   { name: 'MS_IPLOT', category: 'ms', documentation: 'iPlot configuration search path.', valueHint: 'Path to iPlot config directory' },
@@ -64,9 +74,32 @@ const CFG_VARIABLES: CfgVariable[] = [
   { name: 'MS_PROTECTION_ENCRYPT', category: 'ms', documentation: 'Controls file encryption on save. 0=none, 1=encrypt. Use %lock to prevent override.', valueHint: '0 or 1', example: 'MS_PROTECTION_ENCRYPT = 0\n%lock MS_PROTECTION_ENCRYPT' },
   { name: 'MS_DESIGN_HISTORY', category: 'ms', documentation: 'Controls design history tracking. Semicolon-separated key=value pairs.', example: 'MS_DESIGN_HISTORY = create=0;delete=0;commit=0;browse=0' },
   { name: 'MS_EXPANDLEVELNAMES', category: 'ms', documentation: 'Controls how level names are expanded/displayed.', valueHint: '0 or 1' },
+  { name: 'MS_LEVEL_DISPLAY_FORMAT', category: 'ms', documentation: 'Controls how level names and descriptions are displayed in UI prompts. Bentley highlights `N (D)` to show level descriptions while hovering over elements.', example: 'MS_LEVEL_DISPLAY_FORMAT = N (D)' },
   { name: 'MS_KEYIN', category: 'ms', documentation: 'Search path for key-in definition files.', example: 'MS_KEYIN > $(_USTN_WORKSPACEROOT)Data/' },
   { name: 'MS_OUTPUT', category: 'ms', documentation: 'Default output directory for exports.', example: 'MS_OUTPUT = $(_USTN_WORKSETROOT)Output/' },
   { name: 'MS_MATERIAL', category: 'ms', documentation: 'Search path for rendering material (.mat) files.', example: 'MS_MATERIAL > $(_USTN_WORKSPACESTANDARDS)Material/' },
+  { name: 'MS_LOCAL_MATERIALS', category: 'ms', documentation: 'If set to `1`, materials are localized on use and DGN files default to a local materials table when needed. Bentley recommends this for better iTwin and iModel material support.', valueHint: '0 or 1', example: 'MS_LOCAL_MATERIALS = 1' },
+  { name: 'MS_PENTABLE', category: 'ms', documentation: 'Search path for print pen tables.', example: 'MS_PENTABLE = $(CIVIL_ORGANIZATION_STANDARDS)Printing/Pen Tables/' },
+  { name: 'MS_DEFAULT_PLTCFG_FILE', category: 'ms', documentation: 'Default print configuration file name used by MicroStation printing.', example: 'MS_DEFAULT_PLTCFG_FILE = xDOT_Standard_PDF.pltcfg' },
+  { name: 'MS_PLT_PDF_PLTFILE', category: 'ms', documentation: 'Default PDF print configuration file for PDF plotting workflows.', example: 'MS_PLT_PDF_PLTFILE = xDOT_Standard_PDF.pltcfg' },
+  { name: 'MS_PLT_MAX_WORKER_TASKS', category: 'ms', documentation: 'Hidden plotting performance variable controlling how many tasks the non-graphics print worker processes before restarting itself. Bentley recommends larger values such as `2000` for large batch print jobs.', valueHint: 'Positive integer', example: 'MS_PLT_MAX_WORKER_TASKS = 2000' },
+  { name: 'MS_PLT_AUTOAREA_RESULT_LIMIT', category: 'ms', documentation: 'Maximum number of auto-area results returned by plotting workflows.', valueHint: 'Positive integer', example: 'MS_PLT_AUTOAREA_RESULT_LIMIT = 2000' },
+  { name: 'MS_PLT_ENABLE_AUTO_ROTATE', category: 'ms', documentation: 'Enables print auto-rotation.', valueHint: '0 or 1', example: 'MS_PLT_ENABLE_AUTO_ROTATE = 1' },
+  { name: 'MS_PLT_MAX_ON_NEW_AREA', category: 'ms', documentation: 'Controls how many attempts are made when finding a new plot area.', valueHint: 'Positive integer', example: 'MS_PLT_MAX_ON_NEW_AREA = 1' },
+  { name: 'MS_PLT_ENABLE_VARIABLE_DEFINITION_MODE', category: 'ms', documentation: 'Controls variable definition mode in plotting.', valueHint: '0 or 1', example: 'MS_PLT_ENABLE_VARIABLE_DEFINITION_MODE = 0' },
+  { name: 'MS_PLTDLG_CLOSE_AFTER_PLOT', category: 'ms', documentation: 'Closes the print dialog after plotting completes.', valueHint: '0 or 1', example: 'MS_PLTDLG_CLOSE_AFTER_PLOT = 1' },
+  { name: 'MS_PLTDLG_ENABLE_SAVE_CONFIG', category: 'ms', documentation: 'Enables saving print dialog configuration.', valueHint: '0 or 1', example: 'MS_PLTDLG_ENABLE_SAVE_CONFIG = 1' },
+  { name: 'MS_PLTDLG_SET_UNITS_FROM_SHEET', category: 'ms', documentation: 'Sets print units from the active sheet model.', valueHint: '0 or 1', example: 'MS_PLTDLG_SET_UNITS_FROM_SHEET = 1' },
+  { name: 'MS_PLTDLG_SHOW_PRINT_STATUS', category: 'ms', documentation: 'Displays print status while plotting.', valueHint: '0 or 1', example: 'MS_PLTDLG_SHOW_PRINT_STATUS = 1' },
+  { name: 'MS_PRINTERLIST_SYSPRINTERS', category: 'ms', documentation: 'Controls whether system printers are shown in the printer list.', valueHint: '0 or 1', example: 'MS_PRINTERLIST_SYSPRINTERS = 0' },
+  { name: 'MS_PLOTDLG_DEF_PENTABLE', category: 'ms', documentation: 'Default pen table shown in the plot dialog.', example: 'MS_PLOTDLG_DEF_PENTABLE = Black.tbl' },
+  { name: 'MS_OPENV7', category: 'ms', documentation: 'Controls how V7 files are opened; Bentley print examples often set this to `3`.', valueHint: 'Integer', example: 'MS_OPENV7 = 3' },
+  { name: 'MS_PLT_UPDATE_FIELDS', category: 'ms', documentation: 'Controls field updates during print output.', valueHint: 'Integer', example: 'MS_PLT_UPDATE_FIELDS = 2' },
+  { name: 'MS_DESIGNMODELSEED', category: 'ms', documentation: 'Model name used within the design seed file when creating new files.', example: 'MS_DESIGNMODELSEED = Default' },
+  { name: 'MS_SHEETMODELSEEDNAME', category: 'ms', documentation: 'Sheet model name to use within the sheet-model-only DGNLib seed file. Bentley notes that the spelling must match an actual model name in the DGNLib.', example: 'MS_SHEETMODELSEEDNAME = SheetModel' },
+  { name: 'MS_IDLETIMEOUT', category: 'ms', documentation: 'Number of idle minutes before the product exits automatically. Bentley suggests `120` to reduce unused product time charges; minimum is 30, `0` means never exit.', valueHint: '0 or integer >= 30', example: 'MS_IDLETIMEOUT = 120' },
+  { name: 'MS_FONTCONFIGFILE', category: 'ms', documentation: 'Path to a custom font configuration XML file used to hide non-standard fonts from font pickers while keeping legacy compatibility.', example: 'MS_FONTCONFIGFILE = $(CIVIL_ORGANIZATION_STANDARDS)Fonts/FontConfig.xml' },
+  { name: 'MS_CURSORPROMPT', category: 'ms', documentation: 'Controls cursor prompt display. Bentley explicitly warns not to use `MS_CURSORPROMPT = 1` prior to 2025 products.', valueHint: 'Version-sensitive integer', example: '# Do not use prior to 2025\nMS_CURSORPROMPT = 1' },
   { name: 'MS_SPLINES', category: 'ms', documentation: 'Configuration for spline/curve behavior.', valueHint: 'Path or setting value' },
 
   // Civil/ORD variables
@@ -77,7 +110,42 @@ const CFG_VARIABLES: CfgVariable[] = [
   { name: 'CIVIL_FEATUREDEF', category: 'civil', documentation: 'Search path for civil feature definition XML files.', example: 'CIVIL_FEATUREDEF > $(APP_STANDARDS)Feature Definitions/' },
   { name: 'CIVIL_CORRIDORDEF', category: 'civil', documentation: 'Search path for civil corridor definition files.', valueHint: 'Path to corridor definitions' },
   { name: 'CIVIL_ORGANIZATION', category: 'civil', documentation: 'Organization-level civil standards path.', example: 'CIVIL_ORGANIZATION = $(_USTN_ORGANIZATION)Civil/' },
+  { name: 'CIVIL_DEFAULT_STATION_LOCK', category: 'civil', documentation: 'Controls the default station lock state. Bentley notes this should be set to `1`, not `True`.', valueHint: '0 or 1', example: 'CIVIL_DEFAULT_STATION_LOCK = 1' },
+  { name: 'CIVIL_SURVEY_RETAIN_SURVEY_ON_COPY', category: 'civil', documentation: 'Obsolete variable. Bentley states it has been abandoned in the code and should be removed if found.', valueHint: 'Deprecated / do not use' },
+  { name: 'CIVIL_SUPERELEVATION_RULE_FILE', category: 'civil', documentation: 'Full path and filename of the superelevation rule file. Bentley notes that both the directory path and file name must be included.', example: 'CIVIL_SUPERELEVATION_RULE_FILE = $(CIVIL_ORGANIZATION_STANDARDS)Superelevation/Rules/MyRules.xml' },
+  { name: 'CIVILPROPERTYECEXPRESSION', category: 'civil', documentation: 'For 2022 R1 and later, enables Copy ECExpressions functionality from Explorer Properties fields.', valueHint: '0 or 1', example: 'CIVILPROPERTYECEXPRESSION = 1' },
+  { name: 'CIVIL_TOOL_SETTINGS_OMIT_ITEMTYPES', category: 'civil', documentation: 'Hides Item Types from Tool Settings dialogs while leaving them in the MicroStation Properties dialog.', valueHint: 'True or False', example: 'CIVIL_TOOL_SETTINGS_OMIT_ITEMTYPES = True' },
+  { name: 'CIVIL_QUICK_PROPERTIES_OMIT_ITEMTYPES', category: 'civil', documentation: 'Hides Item Types from Quick Properties dialogs while leaving them in the MicroStation Properties dialog.', valueHint: 'True or False', example: 'CIVIL_QUICK_PROPERTIES_OMIT_ITEMTYPES = True' },
+  { name: 'CIVIL_CONTENTMANAGEMENTDGNLIBLIST', category: 'civil', documentation: 'For 10.12+ products, points to the DGNLib containing Civil Labeler definitions. Bentley notes this replaces older XML-based Civil Labeler configuration.', example: 'CIVIL_CONTENTMANAGEMENTDGNLIBLIST = $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Labeler/Civil_Labeler.dgnlib' },
+  { name: 'CIVIL_REPORTS_SUBDIRECTORIES', category: 'civil', documentation: 'Ordered list of report subdirectories. Bentley highlights careful use of `=`, `>`, and `<`, plus whether a trailing slash is required, when combining delivered and custom report folders.', example: 'CIVIL_REPORTS_SUBDIRECTORIES = $(_ROOTDIR)Default/Reports/Cant\nCIVIL_REPORTS_SUBDIRECTORIES > $(_ROOTDIR)Default/Reports/CivilGeometry\nCIVIL_REPORTS_SUBDIRECTORIES < $(CIVIL_ORGANIZATION_STANDARDS)Reports/Custom/' },
+  { name: 'CIVIL_REPORTS_RESOURCES', category: 'civil', documentation: 'Path list for report resource content used by custom reports.', example: 'CIVIL_REPORTS_RESOURCES < $(CIVIL_ORGANIZATION_STANDARDS)Iowa_Reports/' },
+  { name: 'CIVIL_SURVEY_STROKE_TOLERANCE_LINEAR', category: 'civil', documentation: 'Linear stroke tolerance for survey triangulation. Bentley notes large values such as `10000` avoid adding intermediate shots along breaklines.', valueHint: 'Numeric', example: 'CIVIL_SURVEY_STROKE_TOLERANCE_LINEAR = 10000' },
+  { name: 'CIVIL_SURVEY_STROKE_TOLERANCE_CURVE', category: 'civil', documentation: 'Curve stroke tolerance for survey triangulation. For ORD 2024+, Bentley suggests `0` when you do not want additional triangles along arcs.', valueHint: 'Numeric', example: 'CIVIL_SURVEY_STROKE_TOLERANCE_CURVE = 0' },
+  { name: 'CIVIL_ENABLE_QUICK_PRINTSERVER', category: 'civil', documentation: 'Makes ORD use a lighter-weight non-graphics print server process for faster printing.', valueHint: '0 or 1', example: 'CIVIL_ENABLE_QUICK_PRINTSERVER = 1' },
+  { name: 'CIVIL_SUBSURFACE_FILTERS_DGNLIBLIST', category: 'civil', documentation: 'Path and file name of the DGNLib containing drainage/utilities subsurface filters.', example: 'CIVIL_SUBSURFACE_FILTERS_DGNLIBLIST = $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/xDOT_Drainage and Utilities Features Annotations Imperial.dgnlib' },
+  { name: 'CIVIL_CROSSSECTION_STACK_TOP_DOWN', category: 'civil', documentation: 'When `TRUE`, cross sections are created from the top to the bottom of the sheet.', valueHint: 'TRUE or FALSE', example: 'CIVIL_CROSSSECTION_STACK_TOP_DOWN = TRUE' },
+  { name: 'CIVIL_CROSSSECTION_REVERSE_STATION_ENABLE', category: 'civil', documentation: 'When `TRUE`, exposes an option to create cross sections in reverse station order.', valueHint: 'TRUE or FALSE', example: 'CIVIL_CROSSSECTION_REVERSE_STATION_ENABLE = TRUE' },
+  { name: 'CIVIL_PROFILE_HORIZONTAL_GEOMETRY_INFO', category: 'civil', documentation: 'Displays horizontal geometry information in dynamic profile view by default.', valueHint: '0 or 1', example: 'CIVIL_PROFILE_HORIZONTAL_GEOMETRY_INFO = 1' },
+  { name: 'CIVIL_PROFILE_HORIZONTAL_GEOMETRY_HTPS', category: 'civil', documentation: 'Companion setting for default horizontal geometry information in dynamic profile view.', valueHint: '0 or 1', example: 'CIVIL_PROFILE_HORIZONTAL_GEOMETRY_HTPS = 1' },
+  { name: 'CIVIL_PROFILE_STATION_LOCK_INTERVAL', category: 'civil', documentation: 'Station lock interval used with dynamic profile geometry info.', valueHint: 'Numeric', example: 'CIVIL_PROFILE_STATION_LOCK_INTERVAL = 100' },
+  { name: 'CIVIL_COMPONENTCENTER_DOWNLOADEDCELLSLIB', category: 'civil', documentation: 'Target cell library used by Component Center when downloading components and creating cell content.', example: '%if exists ($(_USTN_WORKSETSTANDARDS)Cell/)\nCIVIL_COMPONENTCENTER_DOWNLOADEDCELLSLIB = $(_USTN_WORKSETSTANDARDS)Cell/Downloaded Component Center Cells.cel\n%else\nCIVIL_COMPONENTCENTER_DOWNLOADEDCELLSLIB = $(MS_DEF)/Downloaded Component Center Cells.cel\n%endif' },
+  { name: 'CIVIL_CROSSSECTION_NAVIGATOR_ENABLE_DRAFTING_TOOLS', category: 'civil', documentation: 'Enables drafting tools in the Cross Section Navigator.', valueHint: '0 or 1', example: 'CIVIL_CROSSSECTION_NAVIGATOR_ENABLE_DRAFTING_TOOLS = 1' },
+  { name: 'CIVIL_UPGRADE_PROMPT_OFF', category: 'civil', documentation: 'Automatically hides the civil model upgrade prompt and upgrades files without prompting.', valueHint: '0 or 1', example: 'CIVIL_UPGRADE_PROMPT_OFF = 1' },
+  { name: 'CIVIL_OPEN_OLD_READONLY', category: 'civil', documentation: 'Works with `CIVIL_UPGRADE_PROMPT_OFF` to hide upgrade prompts and open older models read-only.', valueHint: '0 or 1', example: 'CIVIL_UPGRADE_PROMPT_OFF = 1\nCIVIL_OPEN_OLD_READONLY = 1' },
+  { name: 'CIVIL_ANNOTATIONS_IMPORTEXPORT_VISIBLE', category: 'civil', documentation: 'Makes civil annotations import/export tools visible for admin workflows.', valueHint: '0 or 1', example: 'CIVIL_ANNOTATIONS_IMPORTEXPORT_VISIBLE = 1' },
   { name: 'ORD_CONNECT_WORKSPACE_DIR', category: 'civil', documentation: 'Root directory of the ORD CONNECT Workspace. Often set as a Windows environment variable.', example: 'ORD_CONNECT_WORKSPACE_DIR = C:/MICROSTATION_CONNECT_WORKSPACE/' },
+  { name: 'MS_DGNTEXTEDITORFAVORITESYMBOLS', category: 'user', documentation: 'Path to the XML file storing favorite symbols for the DGN text editor.', example: 'MS_DGNTEXTEDITORFAVORITESYMBOLS = $(CIVIL_ORGANIZATION_STANDARDS)Text/FavoriteSymbols.xml' },
+  { name: 'MS_ALLOWREADONLYITEMEDIT', category: 'user', documentation: 'Controls editing of Item Types or related metadata on read-only content. Bentley includes this in its current Item Types variable checklist.', valueHint: '0 or 1' },
+  { name: 'ITEMTYPE_LOOKUP', category: 'user', documentation: 'Current Item Types lookup variable. Bentley notes this replaces the older `ITEMTYPE_EXCELLOOKUP` name.', example: 'ITEMTYPE_LOOKUP = $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Item Types/Lookup.xlsx' },
+  { name: 'ITEMTYPE_PRIORITY_MAP_PATH', category: 'user', documentation: 'Path to the JSON priority map controlling how Item Type conflicts are resolved command-by-command.', example: 'ITEMTYPE_PRIORITY_MAP_PATH = $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Item Types/Civil Item Type Priority.json' },
+  { name: 'ITEMTYPE_EXCELLOOKUP', category: 'user', documentation: 'Deprecated Item Types lookup variable name. Bentley states this has been renamed to `ITEMTYPE_LOOKUP`.', valueHint: 'Deprecated / use ITEMTYPE_LOOKUP instead' },
+  { name: 'SUDA_SEED_FILE', category: 'user', documentation: 'Path and file name for the drainage and utilities seed DGNLib used by SUDA workflows.', example: 'SUDA_SEED_FILE = $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/xDOT_Drainage and Utilities Features Annotations Imperial.dgnlib' },
+  { name: 'SUE_SEED_FILE', category: 'user', documentation: 'Path and file name for the subsurface utilities engineering seed DGNLib.', example: 'SUE_SEED_FILE = $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/xDOT_Drainage and Utilities Features Annotations Imperial.dgnlib' },
+  { name: '_USTN_OUT', category: 'user', documentation: 'Output directory used by certain print and export workflows. Bentley print examples set this to the active DGN directory.', example: '_USTN_OUT = $(_DGNDIR)' },
+  { name: '_CIVIL_STANDARDS_IMPORTEXPORT', category: 'user', documentation: 'Enables civil standards import/export admin functionality.', valueHint: '0 or 1', example: '_CIVIL_STANDARDS_IMPORTEXPORT = 1' },
+  { name: '_USTN_RESTRICT_MANAGE_CONFIGURATION', category: 'user', documentation: 'Blocks access to the configuration manager UI.', valueHint: '0 or 1', example: '_USTN_RESTRICT_MANAGE_CONFIGURATION = 1' },
+  { name: '_USTN_CELLPLACEMENTPERFORMANCE', category: 'user', documentation: 'Improves cell placement performance, especially when the Properties panel is open.', valueHint: 'true or false', example: '_USTN_CELLPLACEMENTPERFORMANCE = true' },
+  { name: '_USTN_PLACENOTE_ACTIVATE_TEXTSTYLE_OF_ACTIVEDIMSTYLE', category: 'user', documentation: 'For ORD 2024+, uses the active text style of the selected dimension style when placing notes.', valueHint: '0 or 1', example: '_USTN_PLACENOTE_ACTIVATE_TEXTSTYLE_OF_ACTIVEDIMSTYLE = 1' },
 
   // DMWF framework variables (_DYNAMIC_*)
   { name: '_DYNAMIC_DATASOURCE', category: 'user', documentation: 'Expands to the ProjectWise datasource root (`@:`). Set in the Predefined-level CSB. All other _DYNAMIC_ root paths are derived from this.', example: '_DYNAMIC_DATASOURCE = @:' },
@@ -112,7 +180,37 @@ const CFG_VARIABLES: CfgVariable[] = [
   { name: '_DYNAMIC_CHECK_VERSION', category: 'user', documentation: 'When set to 1, enables the product version check in the Workspace PWSetup file. Prevents loading with wrong application version.', example: '_DYNAMIC_CHECK_VERSION : 1', valueHint: '0 or 1' },
   { name: '_DYNAMIC_IS_RADS_JOB', category: 'user', documentation: 'Set to 1 when the configuration is loaded by a RADS (Rendering and Document Services) rendition job. Disables interactive UI components.', example: '_DYNAMIC_IS_RADS_JOB : 0', valueHint: '0 or 1' },
   { name: '_DYNAMIC_PRODUCT_VERSION_GEN_MAJ', category: 'user', documentation: 'The generation.major version string of the currently running application (e.g., "24.00"). Used in version check logic.', valueHint: 'Read-only — set by Common_Predefined_ProductVersion.cfg' },
-  { name: 'PW_MWP_COMPARISON_IGNORE_LIST', category: 'user', documentation: 'Semicolon-separated list of variable names excluded from Managed Workspace Profile comparison. Dynamic variables that change per session should be added here.', example: 'PW_MWP_COMPARISON_IGNORE_LIST = PW_MWP_COMPARISON_IGNORE_LIST;_DGNDIR;_DGNFILE\n%lock PW_MWP_COMPARISON_IGNORE_LIST' },
+  { name: 'PW_MWP_COMPARISON_IGNORE_LIST', category: 'user', documentation: 'Semicolon-separated list of additional variables ignored when comparing the active file workspace to the managed workspace of the document being opened. Bentley documents `_DGNDIR` and `_DGNFILE` as default ignore entries because they vary per document/session.', example: 'PW_MWP_COMPARISON_IGNORE_LIST = PW_MWP_COMPARISON_IGNORE_LIST;_DGNDIR;_DGNFILE\n%lock PW_MWP_COMPARISON_IGNORE_LIST' },
+
+  // ProjectWise integrated MicroStation (MCM.USER.CFG) variables
+  { name: '_MCM_PROMPTFORWORKSPACE', category: 'user', documentation: 'If enabled and set to 1, ProjectWise-integrated MicroStation prompts the user to change workspace settings before opening. If commented out, no prompt is shown.', valueHint: '0 or 1', example: '_MCM_PROMPTFORWORKSPACE = 1' },
+  { name: '_MCM_RELOAD_WORKSPACE', category: 'user', documentation: 'Controls how integrated MicroStation reacts when opening a document whose workspace differs from the active document. Bentley documents values 1 and 2 for managed/unmanaged workspace reload behavior; leaving it blank behaves like commented out.', valueHint: '1 or 2', example: '_MCM_RELOAD_WORKSPACE = 1' },
+  { name: '_MCM_WORKSPACE_LOCK', category: 'user', documentation: 'If enabled and set to 1, integrated MicroStation does not load the workspace associated with the selected ProjectWise document. When commented out, the associated workspace loads normally.', valueHint: '0 or 1', example: '_MCM_WORKSPACE_LOCK = 1' },
+  { name: 'PW_INTEGRATEDAPPCLASSNAME', category: 'user', documentation: 'Identifies the integrated application class name used by ProjectWise automatic login and related integration settings. Bentley documents the default MicroStation value as `MicroStation`.', example: 'PW_INTEGRATEDAPPCLASSNAME = MicroStation' },
+  { name: 'PW_BSILOG_ENABLE', category: 'user', documentation: 'Turns ProjectWise integrated MicroStation logging on or off. Bentley documents this as enabled by default in MCM.USER.CFG.', valueHint: '0 or 1', example: 'PW_BSILOG_ENABLE = 1' },
+  { name: 'PW_BSILOG_CONFIG_FILE', category: 'user', documentation: 'Path to the logging configuration file used by integrated MicroStation. Bentley documents the default as `$(PWDIR)bin/mcm.log.xml`.', example: 'PW_BSILOG_CONFIG_FILE = $(PWDIR)bin/mcm.log.xml' },
+  { name: 'PW_DISABLE_BINARY_COMPATIBILITY_CHECK', category: 'user', documentation: 'Disables the ProjectWise check that verifies the running MicroStation build is binary compatible with ProjectWise Explorer. Bentley recommends leaving this alone unless intentionally avoiding integrated mode with an unsupported version.', valueHint: '0 or 1' },
+  { name: 'PW_REFERENCE_MODE', category: 'user', documentation: 'Controls ProjectWise reference update checking in integrated MicroStation. Bentley documents: 1 = prompt to reload updated references, 2 = silently reload updated references, 3 or commented out = do not check.', valueHint: '1, 2, or 3', example: 'PW_REFERENCE_MODE = 2' },
+  { name: 'PW_REFERENCE_TIMER', category: 'user', documentation: 'Polling interval in minutes for updated reference checks when `PW_REFERENCE_MODE` is 1 or 2. Bentley documents 30 minutes as the default when this variable is not enabled.', valueHint: 'Positive integer', example: 'PW_REFERENCE_TIMER = 15' },
+  { name: 'PW_RESOLVEREFERENCES', category: 'user', documentation: 'Scans the file being opened for unresolved references that appear to come from ProjectWise. Bentley documents: 1 = show all matching files, 2 = show only matching files the user can access.', valueHint: '1 or 2', example: 'PW_RESOLVEREFERENCES = 2' },
+  { name: 'PW_CHECKINOPT', category: 'user', documentation: 'Controls what happens when a checked-out document is closed in integrated MicroStation. Bentley documents: commented out = show Check In dialog, 1 = silent check-in, 0 = close without prompting and without check-in.', valueHint: '0 or 1', example: 'PW_CHECKINOPT = 1' },
+  { name: 'PW_DONT_WARN_ON_REFERENCE_MODIFY', category: 'user', documentation: 'Suppresses warnings when reference files are moved or renamed. Bentley documents 1 = do not warn, 0 or commented out = show warnings.', valueHint: '0 or 1' },
+  { name: 'PW_CAPTIVEENVIRONMENT', category: 'user', documentation: 'Controls whether integrated MicroStation is captive to ProjectWise dialogs only. Bentley documents: 1 = stay in ProjectWise dialogs only, 0 or commented out = Cancel can fall back to native MicroStation file-system dialogs.', valueHint: '0 or 1', example: 'PW_CAPTIVEENVIRONMENT = 1' },
+  { name: 'PW_DONT_RESOLVE_APPLICATION', category: 'user', documentation: 'Controls the default Application filter in the integrated File Open dialog. Bentley documents: 1 = always default to All Applications, 0 or commented out = remember/use the resolved application such as MicroStation.', valueHint: '0 or 1' },
+  { name: 'PW_DISABLE_AUTO_FILE_EXTENSION_GENERATION', category: 'user', documentation: 'Allows the user to type a custom file extension even when ProjectWise file name locking would normally append the default extension automatically.', valueHint: '0 or 1' },
+  { name: 'PW_LINKSET_TIMER', category: 'user', documentation: 'Sets how often, in minutes, ProjectWise checks for a newer link set file on the server. Bentley documents this as enabled by default and checking every 5 minutes.', valueHint: 'Positive integer', example: 'PW_LINKSET_TIMER = 5' },
+  { name: 'PW_RASTER_CHECKINOPT', category: 'user', documentation: 'Controls how raster attachments are checked in. Bentley documents: -1 or commented out = prompt through Check In dialog, 1 = silent check-in, 0 = do not check in.', valueHint: '-1, 0, or 1' },
+  { name: 'PW_RASTER_CHECKOUTOPT', category: 'user', documentation: 'Controls how raster attachments are checked out. Bentley documents: -1 or commented out = confirm checkout, 1 = silent checkout, 0 = do not check out.', valueHint: '-1, 0, or 1' },
+  { name: 'PW_RASTER_COPYOUT_READWRITE', category: 'user', documentation: 'If enabled, copied-out raster attachments are opened with read/write access instead of read-only access.', valueHint: '0 or 1' },
+  { name: 'MS_RASTER_PROJECTWISE_WARNING_ONCLOSE_DISABLE', category: 'user', documentation: 'Controls whether Raster Manager shows a warning on close when it believes a ProjectWise raster file has changed. Bentley documents 1 = show warning, 0 or commented out = do not show warning.', valueHint: '0 or 1' },
+  { name: 'PW_TITLEBLOCKS_ENABLE_PROGRESSBAR', category: 'user', documentation: 'Controls whether a progress bar is shown while title block tags are being updated from ProjectWise.', valueHint: '0 or 1' },
+  { name: 'PW_TITLEBLOCKS_ENABLE_PRESCANNING', category: 'user', documentation: 'If enabled, the title block module checks whether a reference contains title blocks before attempting to fetch title block attribute values from ProjectWise. Bentley documents this as enabled by default.', valueHint: '0 or 1' },
+  { name: 'PW_TITLEBLOCKS_SKIP_TAGS_IN_REFERENCES', category: 'user', documentation: 'Prevents title block tags in references from being updated. Bentley notes this makes `PW_TITLEBLOCKS_NO_UPDATE_ON_REFRELOAD` unnecessary when enabled.', valueHint: '0 or 1' },
+  { name: 'PW_TITLEBLOCKS_NO_UPDATE_ON_REFRELOAD', category: 'user', documentation: 'Prevents title block tags in references from being updated during reference reload operations. Bentley notes this should not be enabled together with `PW_TITLEBLOCKS_SKIP_TAGS_IN_REFERENCES` unless you intentionally want no reference title block updates at all.', valueHint: '0 or 1' },
+  { name: 'PW_UPDATE_TITLEBLOCKS_ALWAYS', category: 'user', documentation: 'If enabled, title blocks are updated every time the active model changes. Otherwise they are typically updated only once per model per session.', valueHint: '0 or 1' },
+  { name: 'PW_TITLEBLOCKS_UPDATE_READONLY', category: 'user', documentation: 'Allows title block attributes to be updated even in files opened read-only.', valueHint: '0 or 1' },
+  { name: 'PW_REFUPDT_CHK_ONCE', category: 'user', documentation: 'If enabled and set to 1, reference attachments are verified only once per session.', valueHint: '0 or 1' },
+  { name: 'PW_VERIFY_FOR_DELETED_REFS', category: 'user', documentation: 'Prevents deleted reference files from being loaded from stale local working copies. Bentley documents: 1 = do not load deleted references, 0 or commented out = local deleted references may still load.', valueHint: '0 or 1', example: 'PW_VERIFY_FOR_DELETED_REFS = 1' },
 
   // System/platform read-only variables
   { name: '_DGNDIR', category: 'user', documentation: 'Full PW path to the directory containing the currently open DGN/DWG file. Key anchor for dynamic workspace resolution — used with DMS_PROJECT() etc.', valueHint: 'Read-only — set by ProjectWise Explorer' },
@@ -377,11 +475,36 @@ function validateCfgDocument(document: vscode.TextDocument, collection: vscode.D
       const varName = assignMatch[1];
       const value = assignMatch[2].trim();
 
+      if (varName === 'CIVIL_DEFAULT_STATION_LOCK' && /^true$/i.test(value)) {
+        diagnostics.push(new vscode.Diagnostic(
+          new vscode.Range(i, 0, i, rawLine.length),
+          'Bentley recommends `CIVIL_DEFAULT_STATION_LOCK = 1` instead of `True`.',
+          vscode.DiagnosticSeverity.Warning
+        ));
+      }
+
+      if (varName === 'CIVIL_SURVEY_RETAIN_SURVEY_ON_COPY') {
+        diagnostics.push(new vscode.Diagnostic(
+          new vscode.Range(i, 0, i, rawLine.length),
+          '`CIVIL_SURVEY_RETAIN_SURVEY_ON_COPY` is obsolete and should be removed.',
+          vscode.DiagnosticSeverity.Warning
+        ));
+      }
+
+      if (varName === 'ITEMTYPE_EXCELLOOKUP') {
+        diagnostics.push(new vscode.Diagnostic(
+          new vscode.Range(i, 0, i, rawLine.length),
+          '`ITEMTYPE_EXCELLOOKUP` has been renamed to `ITEMTYPE_LOOKUP`.',
+          vscode.DiagnosticSeverity.Information
+        ));
+      }
+
       // Directory variables should end with /
       const dirVariables = ['MS_RFDIR', 'MS_CELLLIST', 'MS_DGNLIB', 'MS_PLOTFILES',
         'MS_PLTCFG', 'MS_MDLAPPS', 'MS_MACROS', 'MS_PATTERN', 'MS_GUIDATA',
         'MS_PRINT', 'MS_PRINT_ORGANIZER', 'MS_OUTPUT', 'MS_BACKUP', 'MS_MATERIAL',
-        'MS_RENDERDATA', '_USTN_WORKSPACEROOT', '_USTN_WORKSPACESTANDARDS',
+        'MS_RENDERDATA', 'MS_VBASEARCHDIRECTORIES', 'MS_VBACOPYOUT', 'MS_PENTABLE',
+        'MS_PLTCFG_PATH', 'CIVIL_REPORTS_RESOURCES', '_USTN_WORKSPACEROOT', '_USTN_WORKSPACESTANDARDS',
         '_USTN_WORKSETSROOT', '_USTN_WORKSETROOT', '_USTN_WORKSETSTANDARDS',
         '_USTN_WORKSETDATA', '_USTN_ORGANIZATION', '_USTN_CONFIGURATION',
         '_USTN_CUSTOM_CONFIGURATION', '_USTN_WORKSPACESROOT'];
@@ -440,7 +563,7 @@ function validateCfgDocument(document: vscode.TextDocument, collection: vscode.D
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { parseWorkspace, compareWorkspaces, ParseResult } from './cfgParser';
-import { ProjectWiseClient, SavedConnection } from './pwClient';
+import { ProjectWiseClient, SavedConnection, PwFolder } from './pwClient';
 import { WorkspaceExplorerPanel } from './workspaceExplorer';
 import {
   extractManagedWorkspace,
@@ -692,20 +815,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
         // If no applications found (or user chose folder browse), pick a folder
         if (!applicationInstanceId) {
-          panel.showLoading('Fetching folder list from ProjectWise...');
-          const projects = await client.listProjects();
-          const folderItems = projects.map(p => ({
-            label: `$(folder) ${p.name}`,
-            description: p.description,
-            detail: p.instanceId,
-          }));
-          const folderPick = await vscode.window.showQuickPick(folderItems, {
-            placeHolder: 'Select the document folder to resolve WorkSet CSBs',
+          panel.showLoading('Select ProjectWise folder (RichProject navigation or GUID)...');
+          const folderSelection = await promptForPwFolderGuid(client, {
             title: 'Select PW Folder',
+            placeHolder: 'Select the document folder to resolve WorkSet CSBs',
           });
-          if (!folderPick) return;
-          folderGuid = folderPick.detail!;
-          label = `PW: ${conn.label} / ${projects.find(p => p.instanceId === folderGuid)?.name ?? folderGuid}`;
+          if (!folderSelection) return;
+          folderGuid = folderSelection.folderGuid;
+          label = `PW: ${conn.label} / ${folderSelection.folderLabel}`;
 
           // Try to look up the Application from the folder
           panel.showLoading('Resolving Application assignment from folder...');
@@ -729,18 +846,13 @@ export function activate(context: vscode.ExtensionContext): void {
             { placeHolder: 'Do you want to specify the document folder for WorkSet/Discipline CSBs?' }
           );
           if (wantFolder?.detail === 'yes') {
-            panel.showLoading('Fetching folder list...');
-            const projects = await client.listProjects();
-            const folderItems = projects.map(p => ({
-              label: `$(folder) ${p.name}`,
-              description: p.description,
-              detail: p.instanceId,
-            }));
-            const folderPick = await vscode.window.showQuickPick(folderItems, {
+            panel.showLoading('Select document folder (RichProject navigation or GUID)...');
+            const folderSelection = await promptForPwFolderGuid(client, {
+              title: 'Select Document Folder',
               placeHolder: 'Select the document folder',
             });
-            if (folderPick) {
-              folderGuid = folderPick.detail!;
+            if (folderSelection) {
+              folderGuid = folderSelection.folderGuid;
             }
           }
         }
@@ -913,7 +1025,7 @@ export function activate(context: vscode.ExtensionContext): void {
       fs.mkdirSync(wsDir, { recursive: true });
 
       const csb = parseManualCsbInput(content, levelPick.label as CsbLevel, name);
-      const cfgContent = csbToCfgContent(csb, workDir);
+      const cfgContent = csbToCfgContent(csb, workDir, {});
       const cfgPath = path.join(wsDir, `${csb.id}.cfg`);
       fs.writeFileSync(cfgPath, cfgContent, 'utf8');
 
@@ -991,6 +1103,106 @@ function storeResult(entry: { label: string; result: ParseResult; rootPath: stri
   lastParseResults = lastParseResults.filter(r => r.rootPath !== entry.rootPath);
   lastParseResults.unshift(entry);
   if (lastParseResults.length > 5) lastParseResults = lastParseResults.slice(0, 5);
+}
+
+async function promptForPwFolderGuid(
+  client: ProjectWiseClient,
+  opts: { title: string; placeHolder: string }
+): Promise<{ folderGuid: string; folderLabel: string } | undefined> {
+  const mode = await vscode.window.showQuickPick(
+    [
+      {
+        label: '$(organization) Navigate from RichProjects',
+        description: "Uses /Project?$filter=isRichProject+eq+'TRUE'&!poly",
+        detail: 'rich',
+      },
+      {
+        label: '$(symbol-key) Enter folder GUID',
+        description: 'Directly use a known ProjectWise folder instanceId',
+        detail: 'guid',
+      },
+    ],
+    {
+      title: opts.title,
+      placeHolder: 'Choose how to locate the ProjectWise folder',
+    }
+  );
+  if (!mode) return undefined;
+
+  if (mode.detail === 'guid') {
+    const guid = await vscode.window.showInputBox({
+      title: opts.title,
+      prompt: 'Enter ProjectWise folder GUID (instanceId)',
+      placeHolder: 'e.g. 2a2f7f9e-....',
+      validateInput: value => value.trim() ? null : 'Folder GUID is required.',
+    });
+    if (!guid) return undefined;
+    return { folderGuid: guid.trim(), folderLabel: guid.trim() };
+  }
+
+  const richProjects = await client.listRichProjects();
+  if (richProjects.length === 0) {
+    vscode.window.showWarningMessage('No RichProjects returned. You can use "Enter folder GUID" instead.');
+    return undefined;
+  }
+
+  type NavState = { parent?: NavState; folder?: PwFolder; subFolders: PwFolder[] };
+  let state: NavState = { subFolders: richProjects };
+
+  while (true) {
+    const currentLabel = state.folder?.name ?? 'RichProjects';
+    const items: Array<{ label: string; description?: string; detail: string }> = [];
+
+    if (state.folder) {
+      items.push({
+        label: '$(check) Use this folder',
+        description: `${state.folder.name} (${state.folder.instanceId})`,
+        detail: '__use_current__',
+      });
+    }
+    if (state.parent) {
+      items.push({
+        label: '$(arrow-left) Up one level',
+        description: 'Go back to the previous folder',
+        detail: '__up__',
+      });
+    }
+
+    for (const folder of state.subFolders) {
+      items.push({
+        label: `$(folder) ${folder.name}`,
+        description: folder.description,
+        detail: folder.instanceId,
+      });
+    }
+
+    const pick = await vscode.window.showQuickPick(items, {
+      title: opts.title,
+      placeHolder: `${opts.placeHolder} • Current: ${currentLabel}`,
+      matchOnDescription: true,
+    });
+
+    if (!pick) return undefined;
+
+    if (pick.detail === '__use_current__' && state.folder) {
+      return { folderGuid: state.folder.instanceId, folderLabel: state.folder.name };
+    }
+
+    if (pick.detail === '__up__' && state.parent) {
+      state = state.parent;
+      continue;
+    }
+
+    const selected = state.subFolders.find(f => f.instanceId === pick.detail);
+    if (!selected) continue;
+
+    const subFolders = await client.listSubFolders(selected.instanceId);
+    state = {
+      parent: state,
+      folder: selected,
+      subFolders,
+    };
+  }
 }
 
 async function promptNewConnection(): Promise<SavedConnection | null> {

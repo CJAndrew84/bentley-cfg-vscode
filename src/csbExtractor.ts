@@ -429,23 +429,33 @@ export async function getApplicationForFolder(
 // Backend A: PowerShell ProjectWise Module
 // ─────────────────────────────────────────────────────────────────────────────
 
-function isPowerShellPwModuleAvailable(): boolean {
-  if (process.platform !== 'win32') return false;
+function detectPowerShellPwModule(): string | null {
+  if (process.platform !== 'win32') return null;
   try {
     const result = spawnSync('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-Command',
-      'Get-Module -ListAvailable -Name ProjectWise | Select-Object -First 1 | ConvertTo-Json',
+      '$m = Get-Module -ListAvailable -Name ProjectWise,PWPS_DAB | Select-Object -First 1 -ExpandProperty Name; if ($m) { $m }',
     ], { timeout: 8000 });
-    return (result.stdout?.toString() ?? '').includes('ProjectWise');
+    const moduleName = (result.stdout?.toString() ?? '').trim();
+    return moduleName || null;
   } catch {
-    return false;
+    return null;
   }
 }
 
+function isPowerShellPwModuleAvailable(): boolean {
+  return detectPowerShellPwModule() !== null;
+}
+
 async function readCsbsViaPwModule(conn: PwConnection, ctx: ManagedWorkspaceContext): Promise<CsbBlock[]> {
+  const moduleName = detectPowerShellPwModule();
+  if (!moduleName) {
+    throw new Error('Neither ProjectWise nor PWPS_DAB PowerShell module is available.');
+  }
+
   const script = `
 param($Server, $Datasource, $Username, $Password, $ApplicationId, $FolderGuid)
-Import-Module ProjectWise -ErrorAction Stop
+Import-Module ${moduleName} -ErrorAction Stop
 $secPass = ConvertTo-SecureString $Password -AsPlainText -Force
 $creds = New-Object System.Management.Automation.PSCredential($Username, $secPass)
 Open-PWDatasource -Server $Server -Datasource $Datasource -Credential $creds -ErrorAction Stop | Out-Null

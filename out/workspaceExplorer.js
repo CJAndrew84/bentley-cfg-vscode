@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Workspace Explorer WebView
  * Provides the main UI panel for:
@@ -6,118 +7,131 @@
  *  - Issue diagnostics
  *  - Side-by-side workspace comparison / diff
  */
-
-import * as vscode from 'vscode';
-import * as path from 'path';
-import { ParseResult, CompareResult, LEVEL_NAMES, ConfigLevel } from './cfgParser';
-
-export class WorkspaceExplorerPanel {
-  public static currentPanel: WorkspaceExplorerPanel | undefined;
-  private readonly _panel: vscode.WebviewPanel;
-  private _disposables: vscode.Disposable[] = [];
-
-  public static createOrShow(context: vscode.ExtensionContext): WorkspaceExplorerPanel {
-    const column = vscode.ViewColumn.Beside;
-    if (WorkspaceExplorerPanel.currentPanel) {
-      WorkspaceExplorerPanel.currentPanel._panel.reveal(column);
-      return WorkspaceExplorerPanel.currentPanel;
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
     }
-    const panel = vscode.window.createWebviewPanel(
-      'bentleyCfgExplorer',
-      'Bentley Workspace Explorer',
-      column,
-      { enableScripts: true, retainContextWhenHidden: true }
-    );
-    WorkspaceExplorerPanel.currentPanel = new WorkspaceExplorerPanel(panel, context);
-    return WorkspaceExplorerPanel.currentPanel;
-  }
-
-  private constructor(panel: vscode.WebviewPanel, private _context: vscode.ExtensionContext) {
-    this._panel = panel;
-    this._panel.webview.html = this._getLoadingHtml();
-    this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
-    this._panel.webview.onDidReceiveMessage(msg => this._handleMessage(msg), null, this._disposables);
-  }
-
-  private async _handleMessage(msg: any): Promise<void> {
-    switch (msg.command) {
-      case 'openFile':
-        if (msg.file) {
-          const uri = vscode.Uri.file(msg.file);
-          await vscode.window.showTextDocument(uri, {
-            preview: true,
-            selection: msg.line !== undefined
-              ? new vscode.Range(msg.line - 1, 0, msg.line - 1, 0)
-              : undefined,
-          });
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.WorkspaceExplorerPanel = void 0;
+const vscode = __importStar(require("vscode"));
+const path = __importStar(require("path"));
+const cfgParser_1 = require("./cfgParser");
+class WorkspaceExplorerPanel {
+    static createOrShow(context) {
+        const column = vscode.ViewColumn.Beside;
+        if (WorkspaceExplorerPanel.currentPanel) {
+            WorkspaceExplorerPanel.currentPanel._panel.reveal(column);
+            return WorkspaceExplorerPanel.currentPanel;
         }
-        break;
-      case 'ready':
-        // WebView signals it's ready
-        break;
+        const panel = vscode.window.createWebviewPanel('bentleyCfgExplorer', 'Bentley Workspace Explorer', column, { enableScripts: true, retainContextWhenHidden: true });
+        WorkspaceExplorerPanel.currentPanel = new WorkspaceExplorerPanel(panel, context);
+        return WorkspaceExplorerPanel.currentPanel;
     }
-  }
-
-  public showLoading(message: string): void {
-    this._panel.webview.html = this._getLoadingHtml(message);
-  }
-
-  public showParseResult(result: ParseResult, label: string, rootPath: string): void {
-    this._panel.webview.html = this._getResultHtml(result, label, rootPath);
-    this._panel.reveal(vscode.ViewColumn.Beside);
-  }
-
-  public showCompareResult(compare: CompareResult, leftLabel: string, rightLabel: string): void {
-    this._panel.webview.html = this._getCompareHtml(compare, leftLabel, rightLabel);
-    this._panel.reveal(vscode.ViewColumn.Beside);
-  }
-
-  public dispose(): void {
-    WorkspaceExplorerPanel.currentPanel = undefined;
-    this._panel.dispose();
-    for (const d of this._disposables) d.dispose();
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // HTML Generators
-  // ─────────────────────────────────────────────────────────────────────────
-
-  private _getLoadingHtml(msg = 'Loading workspace...'): string {
-    return `<!DOCTYPE html><html><body style="font-family:var(--vscode-font-family);padding:40px;text-align:center">
+    constructor(panel, _context) {
+        this._context = _context;
+        this._disposables = [];
+        this._panel = panel;
+        this._panel.webview.html = this._getLoadingHtml();
+        this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+        this._panel.webview.onDidReceiveMessage(msg => this._handleMessage(msg), null, this._disposables);
+    }
+    async _handleMessage(msg) {
+        switch (msg.command) {
+            case 'openFile':
+                if (msg.file) {
+                    const uri = vscode.Uri.file(msg.file);
+                    await vscode.window.showTextDocument(uri, {
+                        preview: true,
+                        selection: msg.line !== undefined
+                            ? new vscode.Range(msg.line - 1, 0, msg.line - 1, 0)
+                            : undefined,
+                    });
+                }
+                break;
+            case 'ready':
+                // WebView signals it's ready
+                break;
+        }
+    }
+    showLoading(message) {
+        this._panel.webview.html = this._getLoadingHtml(message);
+    }
+    showParseResult(result, label, rootPath) {
+        this._panel.webview.html = this._getResultHtml(result, label, rootPath);
+        this._panel.reveal(vscode.ViewColumn.Beside);
+    }
+    showCompareResult(compare, leftLabel, rightLabel) {
+        this._panel.webview.html = this._getCompareHtml(compare, leftLabel, rightLabel);
+        this._panel.reveal(vscode.ViewColumn.Beside);
+    }
+    dispose() {
+        WorkspaceExplorerPanel.currentPanel = undefined;
+        this._panel.dispose();
+        for (const d of this._disposables)
+            d.dispose();
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // HTML Generators
+    // ─────────────────────────────────────────────────────────────────────────
+    _getLoadingHtml(msg = 'Loading workspace...') {
+        return `<!DOCTYPE html><html><body style="font-family:var(--vscode-font-family);padding:40px;text-align:center">
       <h2 style="color:var(--vscode-foreground)">${escHtml(msg)}</h2>
       <div style="margin-top:20px;color:var(--vscode-descriptionForeground)">Please wait...</div>
     </body></html>`;
-  }
-
-  private _getResultHtml(result: ParseResult, label: string, rootPath: string): string {
-    const vars = Array.from(result.variables.values()).sort((a, b) => a.name.localeCompare(b.name));
-    const errors = result.errors;
-    const issues = result.resolutionIssues;
-
-    const errorCount = errors.filter(e => e.severity === 'error').length;
-    const warnCount = errors.filter(e => e.severity === 'warning').length + issues.filter(i => i.severity === 'warning').length;
-    const issueErrorCount = issues.filter(i => i.severity === 'error').length;
-
-    // Group variables by category
-    const ustnVars = vars.filter(v => v.name.startsWith('_USTN_'));
-    const msVars = vars.filter(v => v.name.startsWith('MS_'));
-    const civilVars = vars.filter(v => v.name.startsWith('CIVIL_') || v.name === 'APP_STANDARDS');
-    const otherVars = vars.filter(v => !v.name.startsWith('_USTN_') && !v.name.startsWith('MS_') && !v.name.startsWith('CIVIL_') && v.name !== 'APP_STANDARDS');
-
-    const varTable = (varList: typeof vars) => varList.map(v => {
-      const resolved = v.resolvedValue ?? '(unresolved)';
-      const hasIssue = issues.some(i => i.variable === v.name);
-      const isLocked = v.locked;
-      const rowClass = hasIssue ? 'row-issue' : '';
-      const lockedBadge = isLocked ? '<span class="badge badge-lock">LOCK</span>' : '';
-      const levelBadge = `<span class="badge badge-l${v.level}">${LEVEL_NAMES[v.level as ConfigLevel]}</span>`;
-      const shortFile = path.basename(v.sourceFile);
-      const fileLink = `<a href="#" class="open-file-link" data-open-file="${escAttr(encodeURIComponent(v.sourceFile))}" data-open-line="${v.sourceLine}" title="${escAttr(v.sourceFile)}">${escHtml(shortFile)}:${v.sourceLine}</a>`;
-      const overrides = v.overrideHistory.length > 0
-        ? `<div class="overrides">${v.overrideHistory.map(h =>
-          `<div class="override">↩ was <code>${escHtml(truncate(h.value, 60))}</code> from ${path.basename(h.sourceFile)}:${h.sourceLine} [${LEVEL_NAMES[h.level as ConfigLevel]}]</div>`
-        ).join('')}</div>` : '';
-      return `<tr class="${rowClass}">
+    }
+    _getResultHtml(result, label, rootPath) {
+        const vars = Array.from(result.variables.values()).sort((a, b) => a.name.localeCompare(b.name));
+        const errors = result.errors;
+        const issues = result.resolutionIssues;
+        const errorCount = errors.filter(e => e.severity === 'error').length;
+        const warnCount = errors.filter(e => e.severity === 'warning').length + issues.filter(i => i.severity === 'warning').length;
+        const issueErrorCount = issues.filter(i => i.severity === 'error').length;
+        // Group variables by category
+        const ustnVars = vars.filter(v => v.name.startsWith('_USTN_'));
+        const msVars = vars.filter(v => v.name.startsWith('MS_'));
+        const civilVars = vars.filter(v => v.name.startsWith('CIVIL_') || v.name === 'APP_STANDARDS');
+        const otherVars = vars.filter(v => !v.name.startsWith('_USTN_') && !v.name.startsWith('MS_') && !v.name.startsWith('CIVIL_') && v.name !== 'APP_STANDARDS');
+        const varTable = (varList) => varList.map(v => {
+            const resolved = v.resolvedValue ?? '(unresolved)';
+            const hasIssue = issues.some(i => i.variable === v.name);
+            const isLocked = v.locked;
+            const rowClass = hasIssue ? 'row-issue' : '';
+            const lockedBadge = isLocked ? '<span class="badge badge-lock">LOCK</span>' : '';
+            const levelBadge = `<span class="badge badge-l${v.level}">${cfgParser_1.LEVEL_NAMES[v.level]}</span>`;
+            const shortFile = path.basename(v.sourceFile);
+            const fileLink = `<a href="#" class="open-file-link" data-open-file="${escAttr(encodeURIComponent(v.sourceFile))}" data-open-line="${v.sourceLine}" title="${escAttr(v.sourceFile)}">${escHtml(shortFile)}:${v.sourceLine}</a>`;
+            const overrides = v.overrideHistory.length > 0
+                ? `<div class="overrides">${v.overrideHistory.map(h => `<div class="override">↩ was <code>${escHtml(truncate(h.value, 60))}</code> from ${path.basename(h.sourceFile)}:${h.sourceLine} [${cfgParser_1.LEVEL_NAMES[h.level]}]</div>`).join('')}</div>` : '';
+            return `<tr class="${rowClass}">
         <td class="var-name"><code>${escHtml(v.name)}</code>${lockedBadge}</td>
         <td>${levelBadge} ${fileLink}</td>
         <td class="var-value"><code title="${escAttr(v.value)}">${escHtml(truncate(v.value, 80))}</code></td>
@@ -126,32 +140,25 @@ export class WorkspaceExplorerPanel {
           ${overrides}
         </td>
       </tr>`;
-    }).join('');
-
-    const issueRows = [...errors, ...issues.map(i => ({ ...i, file: i.sourceFile, line: i.sourceLine, message: `[${i.variable}] ${i.issue}` }))]
-      .map(e => {
-        const cls = e.severity === 'error' ? 'issue-error' : e.severity === 'warning' ? 'issue-warn' : 'issue-info';
-        const icon = e.severity === 'error' ? '✖' : e.severity === 'warning' ? '⚠' : 'ℹ';
-        const shortF = path.basename(e.file);
-        const issueLine = 'line' in e ? e.line : 1;
-        const fileLink = `<a href="#" class="open-file-link" data-open-file="${escAttr(encodeURIComponent(e.file))}" data-open-line="${issueLine}">${escHtml(shortF)}:${issueLine}</a>`;
-        return `<tr class="${cls}"><td>${icon}</td><td>${fileLink}</td><td>${escHtml(e.message)}</td></tr>`;
-      }).join('');
-
-    const section = (title: string, count: number, varList: typeof vars) =>
-      varList.length === 0 ? '' : `
+        }).join('');
+        const issueRows = [...errors, ...issues.map(i => ({ ...i, file: i.sourceFile, line: i.sourceLine, message: `[${i.variable}] ${i.issue}` }))]
+            .map(e => {
+            const cls = e.severity === 'error' ? 'issue-error' : e.severity === 'warning' ? 'issue-warn' : 'issue-info';
+            const icon = e.severity === 'error' ? '✖' : e.severity === 'warning' ? '⚠' : 'ℹ';
+            const shortF = path.basename(e.file);
+            const issueLine = 'line' in e ? e.line : 1;
+            const fileLink = `<a href="#" class="open-file-link" data-open-file="${escAttr(encodeURIComponent(e.file))}" data-open-line="${issueLine}">${escHtml(shortF)}:${issueLine}</a>`;
+            return `<tr class="${cls}"><td>${icon}</td><td>${fileLink}</td><td>${escHtml(e.message)}</td></tr>`;
+        }).join('');
+        const section = (title, count, varList) => varList.length === 0 ? '' : `
         <details open>
           <summary><strong>${escHtml(title)}</strong> <span class="count">${count}</span></summary>
           <table class="var-table"><thead><tr>
             <th>Variable</th><th>Source</th><th>Raw Value</th><th>Resolved Value</th>
           </tr></thead><tbody>${varTable(varList)}</tbody></table>
         </details>`;
-
-    const filesProcessed = result.filesProcessed.map(f =>
-      `<li><a href="#" class="open-file-link" data-open-file="${escAttr(encodeURIComponent(f))}" data-open-line="1">${escHtml(f)}</a></li>`
-    ).join('');
-
-    return `<!DOCTYPE html>
+        const filesProcessed = result.filesProcessed.map(f => `<li><a href="#" class="open-file-link" data-open-file="${escAttr(encodeURIComponent(f))}" data-open-line="1">${escHtml(f)}</a></li>`).join('');
+        return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -223,32 +230,28 @@ function filterTable(q) {
 }
 </script>
 </body></html>`;
-  }
-
-  private _getCompareHtml(compare: CompareResult, leftLabel: string, rightLabel: string): string {
-    const { diffs } = compare;
-    const added = diffs.filter(d => d.kind === 'added');
-    const removed = diffs.filter(d => d.kind === 'removed');
-    const changed = diffs.filter(d => d.kind === 'changed');
-    const unchanged = diffs.filter(d => d.kind === 'unchanged');
-
-    const diffRow = (d: typeof diffs[0]) => {
-      const kindLabel = { added: '+ Added', removed: '− Removed', changed: '~ Changed', unchanged: '= Same' }[d.kind];
-      const kindClass = `diff-${d.kind}`;
-      const leftVal = d.leftValue !== undefined ? `<code title="${escAttr(d.leftResolved ?? '')}>${escHtml(truncate(d.leftValue, 80))}</code>` : '<em>—</em>';
-      const rightVal = d.rightValue !== undefined ? `<code title="${escAttr(d.rightResolved ?? '')}>${escHtml(truncate(d.rightValue, 80))}</code>` : '<em>—</em>';
-      const leftSrc = d.leftFile ? `<span class="src">${path.basename(d.leftFile)}:${d.leftLine}</span>` : '';
-      const rightSrc = d.rightFile ? `<span class="src">${path.basename(d.rightFile)}:${d.rightLine}</span>` : '';
-      return `<tr class="${kindClass}">
+    }
+    _getCompareHtml(compare, leftLabel, rightLabel) {
+        const { diffs } = compare;
+        const added = diffs.filter(d => d.kind === 'added');
+        const removed = diffs.filter(d => d.kind === 'removed');
+        const changed = diffs.filter(d => d.kind === 'changed');
+        const unchanged = diffs.filter(d => d.kind === 'unchanged');
+        const diffRow = (d) => {
+            const kindLabel = { added: '+ Added', removed: '− Removed', changed: '~ Changed', unchanged: '= Same' }[d.kind];
+            const kindClass = `diff-${d.kind}`;
+            const leftVal = d.leftValue !== undefined ? `<code title="${escAttr(d.leftResolved ?? '')}>${escHtml(truncate(d.leftValue, 80))}</code>` : '<em>—</em>';
+            const rightVal = d.rightValue !== undefined ? `<code title="${escAttr(d.rightResolved ?? '')}>${escHtml(truncate(d.rightValue, 80))}</code>` : '<em>—</em>';
+            const leftSrc = d.leftFile ? `<span class="src">${path.basename(d.leftFile)}:${d.leftLine}</span>` : '';
+            const rightSrc = d.rightFile ? `<span class="src">${path.basename(d.rightFile)}:${d.rightLine}</span>` : '';
+            return `<tr class="${kindClass}">
         <td><span class="kind-badge">${kindLabel}</span></td>
         <td><code>${escHtml(d.name)}</code></td>
         <td>${leftVal} ${leftSrc}</td>
         <td>${rightVal} ${rightSrc}</td>
       </tr>`;
-    };
-
-    const section = (title: string, items: typeof diffs, open = true) =>
-      items.length === 0 ? '' : `
+        };
+        const section = (title, items, open = true) => items.length === 0 ? '' : `
         <details ${open ? 'open' : ''}>
           <summary><strong>${title}</strong> <span class="count">${items.length}</span></summary>
           <table class="diff-table"><thead><tr>
@@ -257,8 +260,7 @@ function filterTable(q) {
             <th>${escHtml(rightLabel)}</th>
           </tr></thead><tbody>${items.map(diffRow).join('')}</tbody></table>
         </details>`;
-
-    return `<!DOCTYPE html>
+        return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -315,13 +317,12 @@ function filterTable(q) {
 filterTable('');
 </script>
 </body></html>`;
-  }
+    }
 }
-
+exports.WorkspaceExplorerPanel = WorkspaceExplorerPanel;
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared CSS
 // ─────────────────────────────────────────────────────────────────────────────
-
 const WEBVIEW_CSS = `
   :root { font-family: var(--vscode-font-family); font-size: 13px; color: var(--vscode-foreground); }
   body { margin: 0; padding: 0; background: var(--vscode-editor-background); }
@@ -394,18 +395,18 @@ const WEBVIEW_CSS = `
   .left-label { color: #ffaaaa; }
   .right-label { color: #aaffaa; }
 `;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilities
 // ─────────────────────────────────────────────────────────────────────────────
-
-function escHtml(s: string): string {
-  return (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function escHtml(s) {
+    return (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-function escAttr(s: string): string {
-  return escHtml(s ?? '').replace(/'/g, '&#39;');
+function escAttr(s) {
+    return escHtml(s ?? '').replace(/'/g, '&#39;');
 }
-function truncate(s: string, n: number): string {
-  if (!s) return '';
-  return s.length > n ? s.substring(0, n) + '…' : s;
+function truncate(s, n) {
+    if (!s)
+        return '';
+    return s.length > n ? s.substring(0, n) + '…' : s;
 }
+//# sourceMappingURL=workspaceExplorer.js.map

@@ -259,6 +259,53 @@
     "description": "Set/append reference file search directory"
   },
 
+  "ProjectWise VBA Search Directories": {
+    "prefix": ["pwvba", "vbapw", "vbasearch"],
+    "body": [
+      "MS_VBASEARCHDIRECTORIES > $(CIVIL_ORGANIZATION_STANDARDS)Macros/",
+      "MS_VBACOPYOUT = $(MS_VBASEARCHDIRECTORIES)",
+      "$0"
+    ],
+    "description": "Bentley-recommended ProjectWise VBA search and copy-out variables"
+  },
+
+  "Drawing Seeds DGNLib Reset": {
+    "prefix": ["drawingseeds", "dgnlibseeds", "seedsreset"],
+    "body": [
+      "MS_DGNLIBLIST > $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Sheet Seeds/*.dgnlib",
+      "MS_DGNLIBLIST_DRAWINGSEEDS = $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Sheet Seeds/*.dgnlib",
+      "MS_DGNLIBLIST_DRAWINGSEEDS > $(CIVIL_ORGANIZATION_STANDARDS)Dgnlib/Sheet Seeds/Details/*.dgnlib",
+      "$0"
+    ],
+    "description": "Reset delivered drawing seed dgnlibs, then append custom drawing seeds"
+  },
+
+  "Reports Directories Stack": {
+    "prefix": ["reportsdirs", "civilreports", "iowareports"],
+    "body": [
+      "# Load Local Default Reports Directories (ORD Install Folder)",
+      "CIVIL_REPORTS_SUBDIRECTORIES = $(_ROOTDIR)Default/Reports/Cant",
+      "CIVIL_REPORTS_SUBDIRECTORIES > $(_ROOTDIR)Default/Reports/CivilGeometry",
+      "CIVIL_REPORTS_SUBDIRECTORIES > $(_ROOTDIR)Default/Reports/CivilSurvey",
+      "# Load Custom Reports",
+      "MS_VBACOPYOUT = $(CIVIL_ORGANIZATION_STANDARDS)Reports/",
+      "CIVIL_REPORTS_RESOURCES < $(CIVIL_ORGANIZATION_STANDARDS)Reports/",
+      "CIVIL_REPORTS_SUBDIRECTORIES < $(CIVIL_ORGANIZATION_STANDARDS)Reports/Custom/",
+      "$0"
+    ],
+    "description": "Sample delivered + custom report directory pattern from Bentley guidance"
+  },
+
+  "Quick Print Performance": {
+    "prefix": ["quickprint", "printperf", "pltperf"],
+    "body": [
+      "MS_PLT_MAX_WORKER_TASKS = 2000",
+      "CIVIL_ENABLE_QUICK_PRINTSERVER = 1",
+      "$0"
+    ],
+    "description": "Print performance settings highlighted by Bentley"
+  },
+
   "Cell Library": {
     "prefix": ["celllist", "cells", "celllib"],
     "body": ["MS_CELLLIST ${1|=,>,<|} $(${2:_USTN_WORKSPACESTANDARDS})${3:Cell/}${4:cells.cel}"],

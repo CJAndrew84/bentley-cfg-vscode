@@ -22,6 +22,12 @@ Full language support and workspace analysis tooling for Bentley MicroStation / 
 ### Hover Documentation
 Hover any known variable or directive for description, category, and example.
 
+Includes article-backed documentation for many current OpenRoads/OpenSite workspace variables, including:
+- ProjectWise VBA copy-out/search variables
+- Extended `MS_DGNLIBLIST_*` variables for drawing seeds, display styles, item types, and printing
+- Item Types migration notes such as `ITEMTYPE_LOOKUP` replacing `ITEMTYPE_EXCELLOOKUP`
+- Civil reports, survey tolerance, print-performance, upgrade, and admin variables from Bentley's 2025 CFG tips
+
 ### Snippets
 30+ snippets including full workspace/workset/org templates. Key prefixes: `hdr`, `safeinclude`, `wildinclude`, `networkfallback`, `workspace-cfg`, `workset-cfg`, `ord-cfg`.
 
@@ -31,6 +37,9 @@ Live validation on open, change, and save:
 - ❌ Orphaned `%endif`
 - ⚠️ Missing trailing slash on directory variables
 - ⚠️ Backslash paths (should use forward slashes)
+- ⚠️ `CIVIL_DEFAULT_STATION_LOCK = True` guidance (`1` recommended)
+- ⚠️ Obsolete `CIVIL_SURVEY_RETAIN_SURVEY_ON_COPY`
+- ℹ️ Renamed `ITEMTYPE_EXCELLOOKUP` → `ITEMTYPE_LOOKUP`
 - ℹ️ Excess whitespace before operators
 
 ---
@@ -189,7 +198,50 @@ npm install
 npm run compile
 ```
 
-Press **F5** in VS Code to launch the Extension Development Host, or:
+## Run in VS Code Extension Development Host
+
+1. Open this folder in VS Code: `c:\Repos\bentley-cfg-vscode`
+2. Install dependencies:
+
+	```bash
+	npm install
+	```
+
+3. Compile TypeScript once:
+
+	```bash
+	npm run compile
+	```
+
+4. Start debug mode:
+	- Press **F5**, or
+	- Go to **Run and Debug** and choose **Run Extension**
+
+5. In the new **Extension Development Host** window:
+	- Open or create a `.cfg`, `.ucf`, or `.pcf` file
+	- Run a command from Command Palette (for example: `Bentley CFG: Validate Current File`)
+
+6. Make code changes and recompile:
+
+	```bash
+	npm run watch
+	```
+
+	Then use **Developer: Reload Window** in the Extension Development Host to pick up changes.
+
+### Troubleshooting
+
+- If `npm run compile` fails, run:
+
+  ```bash
+  npm install
+  npm run compile
+  ```
+
+- If `F5` does not start the host, open **Run and Debug** and select **Run Extension**.
+- If commands are missing, confirm the active editor language is `Bentley CFG` (open a `.cfg` file).
+
+To package and install manually, run:
 
 ```bash
 npx @vscode/vsce package

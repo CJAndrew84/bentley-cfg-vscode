@@ -47,6 +47,7 @@ export interface PwFolder {
   name: string;
   description: string;
   parentGuid: string;
+  isRichProject?: boolean;
   children?: PwFolder[];
   documents?: PwDocument[];
 }
@@ -87,21 +88,34 @@ export class ProjectWiseClient {
     return (data.instances ?? []).map(mapProject);
   }
 
+  /** List only Rich Projects (server-side filter when supported) */
+  async listRichProjects(): Promise<PwFolder[]> {
+    try {
+      const data = await this.get('/Project', `$filter=isRichProject+eq+'TRUE'`);
+      return (data.instances ?? []).map(mapProject);
+    } catch {
+      const all = await this.listProjects();
+      return all.filter(p => p.isRichProject);
+    }
+  }
+
   /** List sub-folders under a project GUID */
   async listSubFolders(projectGuid: string): Promise<PwFolder[]> {
-    const data = await this.get(`/Project/${projectGuid}/Project-Project`);
+    const data = await this.get(
+      `/Project!poly?$filter=ProjectParent-forward-Project.$id+eq+'${projectGuid}'`
+    );
     return (data.instances ?? []).map(mapProject);
   }
 
   /** List documents in a folder */
   async listDocuments(projectGuid: string): Promise<PwDocument[]> {
-    const data = await this.get(`/Project/${projectGuid}/Project-Document`);
+    const data = await this.get(`/Project/${projectGuid}/Document`);
     return (data.instances ?? []).map(mapDocument);
   }
 
   /** Download a document's file content as a string */
   async downloadDocumentContent(docInstanceId: string): Promise<string> {
-    const url = `${this.baseUrl}/Document/${docInstanceId}?$select=*&$downloadFile=true`;
+    const url = `${this.baseUrl}/Document/${docInstanceId}/$file`;
     return this.getRaw(url);
   }
 
@@ -139,8 +153,11 @@ export class ProjectWiseClient {
     }
   }
 
-  private async get(endpoint: string): Promise<any> {
-    const url = `${this.baseUrl}${endpoint}?$select=*`;
+  private async get(endpoint: string, extraQuery?: string): Promise<any> {
+    const hasQuery = endpoint.includes('?');
+    const queryPrefix = hasQuery ? '&' : '!poly?';
+    const query = `$select=*${extraQuery ? `&${extraQuery}` : ''}`;
+    const url = `${this.baseUrl}${endpoint}${queryPrefix}${query}`;
     const body = await this.getRaw(url);
     return JSON.parse(body);
   }
@@ -210,10 +227,14 @@ export async function downloadManagedWorkspace(
 
 function extractHostname(wsgUrl: string): string {
   try {
-    return new URL(wsgUrl).hostname;
+    return stripWsSuffix(new URL(wsgUrl).hostname);
   } catch {
-    return wsgUrl.replace(/^https?:\/\//, '').split('/')[0];
+    return stripWsSuffix(wsgUrl.replace(/^https?:\/\//, '').split('/')[0]);
   }
+}
+
+function stripWsSuffix(hostname: string): string {
+  return hostname.replace(/-ws(?=\.|$)/i, '');
 }
 
 function isCfgFile(name: string): boolean {
@@ -227,7 +248,15 @@ function mapProject(inst: any): PwFolder {
     name: p.Name ?? p.Label ?? inst.instanceId,
     description: p.Description ?? '',
     parentGuid: p.ParentGuid ?? '',
+    isRichProject: toBool(p.IsRichProject ?? p.isRichProject),
   };
+}
+
+function toBool(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.toLowerCase() === 'true';
+  if (typeof value === 'number') return value !== 0;
+  return false;
 }
 
 function mapDocument(inst: any): PwDocument {
