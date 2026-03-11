@@ -1,0 +1,294 @@
+{
+  "name": "Bentley CFG",
+  "scopeName": "source.bentley-cfg",
+  "fileTypes": ["cfg", "ucf", "pcf"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#preprocessor-directive" },
+    { "include": "#level-directive" },
+    { "include": "#lock-directive" },
+    { "include": "#undefine-directive" },
+    { "include": "#variable-assignment" },
+    { "include": "#variable-reference" }
+  ],
+  "repository": {
+
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.bentley-cfg"
+    },
+
+    "preprocessor-directive": {
+      "patterns": [
+        {
+          "comment": "%if / %ifdef / %ifndef / %iffeature — all conditional forms from DMWF UDL",
+          "begin": "^\\s*(%(?:iffeature|ifdef|ifndef|if))\\b",
+          "end": "$",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.preprocessor.if.bentley-cfg" }
+          },
+          "patterns": [
+            { "include": "#comment" },
+            { "include": "#logical-operators" },
+            { "include": "#arithmetic-operators" },
+            { "include": "#comparison-operators" },
+            { "include": "#preprocessor-functions" },
+            { "include": "#variable-reference" },
+            { "include": "#string-literal" }
+          ]
+        },
+        {
+          "comment": "%else / %elseif / %elif",
+          "match": "^\\s*(%(?:elseif|elif|else))\\b",
+          "captures": {
+            "1": { "name": "keyword.control.preprocessor.else.bentley-cfg" }
+          }
+        },
+        {
+          "match": "^\\s*(%endif)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.preprocessor.endif.bentley-cfg" }
+          }
+        },
+        {
+          "begin": "^\\s*(%include)\\b",
+          "end": "$",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.preprocessor.include.bentley-cfg" }
+          },
+          "patterns": [
+            { "include": "#comment" },
+            { "include": "#variable-reference" },
+            { "include": "#level-keyword-inline" },
+            {
+              "match": "[^\\s#\\$()]+",
+              "name": "string.unquoted.path.bentley-cfg"
+            }
+          ]
+        },
+        {
+          "begin": "^\\s*(%define)\\b",
+          "end": "$",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.preprocessor.define.bentley-cfg" }
+          },
+          "patterns": [
+            { "include": "#comment" },
+            {
+              "match": "[A-Za-z_][A-Za-z0-9_]*",
+              "name": "entity.name.variable.macro.bentley-cfg"
+            }
+          ]
+        },
+        {
+          "comment": "%error and %warning — diagnostic directives (red in DMWF UDL Keywords5)",
+          "match": "^\\s*(%(?:error|warning))\\b.*$",
+          "captures": {
+            "1": { "name": "keyword.control.preprocessor.diagnostic.bentley-cfg" }
+          }
+        }
+      ]
+    },
+
+    "level-directive": {
+      "match": "^\\s*(%level)\\s*(\\d+|WorkSpace|WorkSet|Organization|System|Application|Role|User)\\b",
+      "captures": {
+        "1": { "name": "keyword.control.level.bentley-cfg" },
+        "2": { "name": "constant.numeric.level.bentley-cfg" }
+      }
+    },
+
+    "lock-directive": {
+      "match": "^\\s*(%lock)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.lock.bentley-cfg" },
+        "2": { "name": "entity.name.variable.bentley-cfg" }
+      }
+    },
+
+    "undefine-directive": {
+      "match": "^\\s*(%(?:undef|undefine))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.undefine.bentley-cfg" },
+        "2": { "name": "entity.name.variable.bentley-cfg" }
+      }
+    },
+
+    "variable-assignment": {
+      "begin": "^\\s*([A-Za-z_][A-Za-z0-9_\\-]*)\\s*(=|>|<|:)",
+      "end": "$",
+      "beginCaptures": {
+        "1": {
+          "name": "entity.name.variable.bentley-cfg",
+          "patterns": [
+            { "include": "#system-variables" },
+            { "include": "#dynamic-variables" },
+            { "include": "#finddir-variables" },
+            { "include": "#ustn-variables" },
+            { "include": "#ms-variables" },
+            { "include": "#civil-variables" },
+            { "include": "#pw-variables" }
+          ]
+        },
+        "2": { "name": "keyword.operator.assignment.bentley-cfg" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#at-colon-macro" },
+        { "include": "#variable-reference" },
+        { "include": "#builtin-functions-inline" },
+        { "include": "#string-literal" },
+        { "include": "#path-value" }
+      ]
+    },
+
+    "at-colon-macro": {
+      "comment": "@: expands to pw:datasource/documents/ — used in DMWF as _DYNAMIC_DATASOURCE = @:",
+      "match": "@:",
+      "name": "constant.language.datasource.bentley-cfg"
+    },
+
+    "variable-reference": {
+      "patterns": [
+        {
+          "comment": "${VAR} — immediate expansion",
+          "match": "\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}",
+          "name": "variable.other.immediate.bentley-cfg",
+          "captures": {
+            "1": { "name": "variable.other.bentley-cfg" }
+          }
+        },
+        {
+          "comment": "$(FUNC(VAR)) — built-in function call with variable argument, e.g. $(LASTDIRPIECE(_DYNAMIC_WORKAREA))",
+          "match": "\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\(([A-Za-z_][A-Za-z0-9_]*)\\)\\)",
+          "name": "meta.function-call.bentley-cfg",
+          "captures": {
+            "1": { "name": "support.function.builtin.bentley-cfg" },
+            "2": { "name": "variable.other.bentley-cfg" }
+          }
+        },
+        {
+          "comment": "$(FUNC(literal)) — built-in function with literal argument, e.g. $(dir(MY_PATH))",
+          "match": "\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\(([^)]+)\\)\\)",
+          "name": "meta.function-call.bentley-cfg",
+          "captures": {
+            "1": { "name": "support.function.builtin.bentley-cfg" },
+            "2": { "name": "string.unquoted.argument.bentley-cfg" }
+          }
+        },
+        {
+          "comment": "$(VAR) — deferred expansion",
+          "match": "\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\)",
+          "name": "variable.other.deferred.bentley-cfg",
+          "captures": {
+            "1": { "name": "variable.other.bentley-cfg" }
+          }
+        },
+        {
+          "comment": "@: datasource root macro in value position",
+          "match": "@:",
+          "name": "constant.language.datasource.bentley-cfg"
+        }
+      ]
+    },
+
+    "preprocessor-functions": {
+      "comment": "Keywords3: exists/defined — used in %if conditions. Keywords4: path built-ins used inside $().",
+      "patterns": [
+        {
+          "comment": "Keywords3 — conditional test functions",
+          "match": "\\b(defined|exists|expandvars)\\b",
+          "name": "support.function.preprocessor.bentley-cfg"
+        },
+        {
+          "comment": "Keywords4 — path manipulation built-ins, case-insensitive as in UDL",
+          "match": "\\b(?i)(dev|dir|devdir|parentdir|parentdevdir|basename|filename|ext|noext|first|concat|build|lastdirpiece|registryread|dms_project|dms_parentproject|dms_connectedproject|dms_connectedprojectguid)\\b",
+          "name": "support.function.builtin.bentley-cfg"
+        }
+      ]
+    },
+
+    "dynamic-variables": {
+      "comment": "_DYNAMIC_* variables — DMWF framework internal variables (Keywords7 in UDL, subdued colour)",
+      "match": "\\b(_DYNAMIC_[A-Za-z0-9_]+)\\b",
+      "name": "support.variable.dynamic.bentley-cfg"
+    },
+
+    "finddir-variables": {
+      "comment": "FINDDIR_* variables — used by FindInPath.cfg / FindNameInPath.cfg utilities",
+      "match": "\\b(FINDDIR_[A-Za-z0-9_]+)\\b",
+      "name": "support.variable.finddir.bentley-cfg"
+    },
+
+    "ustn-variables": {
+      "comment": "_USTN_* — standard MicroStation/ORD workspace variables (Keywords6 in UDL)",
+      "match": "\\b(_USTN_(?:ALTCHARTRAN|APPL|AUDIT_APPS|BENTLEYROOT|BUNDLE_UPGRADE_GUID|CACHECFG|CACHEWSCFG|CAPABILITY(?:_DGN|_DWG|_V7)?|CHARTRAN|COMMONAPPDATAPATH|CONFIGURATION(?:SETS)?|CONNECT_PROJECTGUID|CUSTOM_CONFIGURATION|CUSTOMIZEBASEID|DATABASE(?:CFG|NAME)?|DEFAULTUSER_CFG_FILE|DEFUSERINTNAME|DGNLIBLIST_SYSTEM|DISALLOW_NOWORKSET|DISPLAYALLCFGVARS|DOCUMENTATIONROOT|ECAPPL|EXAMPLE(?:WORKSET|WORKSPACE)NAME|FEATUREASPECTSDLLLIST|FEATURETRACKING_DATASOURCE|FILEHANDLERS|FIRSTDGN(?:APPS|FILE)|GUIROOT|HAVEWORKSET|HELPNAMESPACE|HELPTAG_[A-Z_]+|HOMEPREFS|HOMEROOT|ICONPRIMARYRSC|IMODELTEMP|INSTALLED_(?:CONFIGURATION|WORKSPACEROOT)|IRSTEMP|ITSYNC_AUTO_DOWNLOAD|LEVEL_ISUSED_IN_NONINDEXEDMODELS|LICENSING|LOCALE_(?:COUNTRY|LANGUAGE)|LOCAL(?:USER)?(?:APPDATAPATH|TEMPPATH)?|LocalUser(?:AppDataPath|TempPath)|MASTEMP(?:_EXTRACT|_PACKAGE|_ZIP)?|MSINFOPATH|MSMODE|NEWDGNFILE|NOICONCACHE|ORGANIZATION(?:_GROUP_STANDARDS|_SUBGROUP_STANDARDS)?|OUT|OUTDIRNAME|PREFNAMEBASE|PRIMARY_RIBBONRSCLIST|PRODUCT_(?:CONFIGVARNAME|COPYRIGHTYEARS|DIRNAME|FILEBASENAME|FILETYPENAME|FULLMARKETINGNAME|HELPFILENAME|NAME|ONE_NAME|ONE_GROUPNAME|ONE_SUBGROUPNAME|SHORTMARKETINGNAME|SHORTNAME|TITLEBARNAME|VERSION(?:_GENERATION|_MAJOR|_MINOR|_BUILD|_GEN_MAJ_MNR|_GEN_MAJ)?)|PROJECT(?:CFG|DATA|DESCR|NAME|ROOT|SROOT|SUBDIR)?|RASTERGDALDATA|RASTERTABLE|REQUIREDAPPS|RMGR_MAXFILEPTRS|ROLECFG|ROLE_NAME|ROLESDIR|SELECTED_CONFIGURATION|SITE|SUPPRESS_CROPPLANESECTIONGRAPHICS|SUPRESS_NEWTEMPLATEDEFAULTS|SYSTEM(?:_GUIDGNLIBLIST|DGNLIBLIST|ROOT|TABLES)?|TFROOT|UIPATH|UISTANDARDS|USER(?:_CONFIGURATION(?:_LABEL)?|APPDATAPATH|CFG|DESCR|INT(?:NAME|ROOT)?|NAME)?|WORKSET(?:_GROUP_STANDARDS|_SUBGROUP_STANDARDS|CFG|DESCR|DGNS(?:DIRNAME)?|DGNWS(?:TEMPLATE)?|NAME|ROOT|SDGNWSROOT|SROOT|STANDARDS(?:DIRNAME)?|STANDARDSUBDIRS|TEMPLATE|WORKFILES)?|WORKSPACE(?:_GROUP_STANDARDS|_SUBGROUP_STANDARDS|CFG|DESCR|LABEL|NAME|ROOT|SROOT|STANDARDS|STANDARDSUBDIRS|TEMPLATE)?))\\b",
+      "name": "support.variable.ustn.bentley-cfg"
+    },
+
+    "ms-variables": {
+      "comment": "MS_* — MicroStation configuration variables",
+      "match": "\\b(MS_(?:ANIMDIR|ANNOTATION|BACKUP|BASEPATH|BATCHPLT_SPECS|CELL(?:LIST|SELECTOR)?|COMPRESS|CURSORPROMPT|DGNLIB(?:LIST(?:_[A-Z_]+)?|PATH)?|DESIGNSEED|DIMENS|DWGDATA|DWGSEED|EXPAND(?:LEVELNAMES)?|FILEHISTORY|GEOCOORD|GEODAT|GEOSELECT|GUIDATA|GUIRSC|IPLOT|KEYIN|LEVEL|LINESTYLE|LOCALE|MACRO(?:S)?|MDLAPPS|MONITOR_USER_PREFS|NOUNDO|OUTPUT|PDFEXPORT|PATTERN|PLOTFILES|PLT(?:CFG|R)?|PRINT(?:DEF|ORGANIZER)?|PROTECTION_ENCRYPT|RASTERTABLE|RESCFG|RFDIR|SPLINES|SYMBRSRC|TAG|TASKNAVIGATORCFG|TEXT(?:FAVORITES)?|TOOLSETTINGS|USTN_DIR|VBA(?:AUTOLOADPROJECTS|MACRO(?:S)?|SEARCHDIRECTORIES)?|WORKSPACE|WORKSET))\\b",
+      "name": "support.variable.ms.bentley-cfg"
+    },
+
+    "civil-variables": {
+      "comment": "CIVIL_* and ORD-specific variables",
+      "match": "\\b(CIVIL_(?:CORRIDORDEF|DRAPEDSURFACE|FEATUREDEF|ORGANIZATION|ROADWAY_TEMPLATE_LIBRARY|STANDARDS|SUPERELEVATION|TEMPLATELIB|WORKSPACE(?:CFG|DESIGNSEED|SEED|TEMPLATE_LIBRARY_NAME))|APP_STANDARDS|ORD_(?:CONNECT_WORKSPACE_DIR|ORGANIZATION))\\b",
+      "name": "support.variable.civil.bentley-cfg"
+    },
+
+    "pw-variables": {
+      "comment": "PW_* / _PROJECTWISE_* — ProjectWise integration variables",
+      "match": "\\b(PW_(?:DATASOURCE|MANAGEDWORKSPACE|MWP_COMPARISON_IGNORE_LIST|WORKDIR(?:_WORKSPACE)?)|_PROJECTWISE_DRIVE(?:_[A-Z_]+)?|PWDIR|MSLOCAL|MSDIR(?:_INSTALLED)?|CONNECTUSER_ORGANIZATION)\\b",
+      "name": "support.variable.pw.bentley-cfg"
+    },
+
+    "system-variables": {
+      "comment": "System/platform variables — Keywords6 in UDL. _VERSION_*, _ENGINENAME, _DGNDIR, _ROOTDIR, _WINNT etc.",
+      "match": "\\b(_VERSION_(?:8_11|8_10|10_0|89)|_BUNDLE_DEPLOYMENTIMAGE_GUID|_DGNDIR|_DGNFILE|_EMBEDFILE|_ENGINENAME|_INTELNT|_MSCONFIG_(?:CFG_|VERSION_(?:MAJOR|MINOR|BUILD))|_PACKAGEFILE|_PLATFORMNAME|_RIBBON_INITIAL_WORKFLOW|_ROOTDIR|_WINNT|_WORKDIR|_BENTLEY(?:POWERMAPFIELD|POWERMAP|REDLINE|VIEW)|_MSDRAFT|_NAVIGATOR|_OPENBUILDINGSDESIGNER|_IMODELCOMPOSER|_CONSTRUCTSIM|_USTN_PRODUCT_VERSION(?:_GEN_MAJ_MNR|_GEN_MAJ|_GENERATION|_MAJOR|_MINOR|_BUILD)?)\\b",
+      "name": "support.variable.system.bentley-cfg"
+    },
+
+    "builtin-functions-inline": {
+      "comment": "Keywords4 built-ins highlighted in value position — e.g. the word 'lastdirpiece' or 'parentdevdir' appearing outside a $() wrapper",
+      "match": "\\b(?i)(dev|dir|devdir|parentdir|parentdevdir|basename|filename|ext|noext|first|concat|build|lastdirpiece|registryread|dms_project|dms_parentproject|dms_connectedproject|dms_connectedprojectguid)\\b",
+      "name": "support.function.builtin.bentley-cfg"
+    },
+
+    "logical-operators": {
+      "match": "(&&|\\|\\||!(?!=))",
+      "name": "keyword.operator.logical.bentley-cfg"
+    },
+
+    "arithmetic-operators": {
+      "comment": "Arithmetic operators valid in %if numeric expressions",
+      "match": "(?<![=!<>])([+\\-\\*])(?![=])",
+      "name": "keyword.operator.arithmetic.bentley-cfg"
+    },
+
+    "comparison-operators": {
+      "comment": "Comparison operators in %if expressions",
+      "match": "(==|!=|<=|>=)",
+      "name": "keyword.operator.comparison.bentley-cfg"
+    },
+
+    "level-keyword-inline": {
+      "match": "\\blevel\\s+(WorkSpace|WorkSet|Organization|System|Application|Role|User|\\d+)\\b",
+      "captures": {
+        "0": { "name": "keyword.control.level.inline.bentley-cfg" }
+      }
+    },
+
+    "string-literal": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.bentley-cfg"
+    },
+
+    "path-value": {
+      "match": "[A-Za-z]:[/\\\\][^\\s#]*|[/\\\\]{1,2}[^\\s#]+",
+      "name": "string.unquoted.path.bentley-cfg"
+    }
+  }
+}
