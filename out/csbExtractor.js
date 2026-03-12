@@ -230,16 +230,22 @@ async function extractManagedWorkspace(conn, ctx, client) {
     const orderedCsbs = orderCsbs(csbs);
     logTrackedVariable('After CSB ordering', orderedCsbs);
     if (backend === 'powershell-pwmodule') {
+        // Collect all PW folder paths that need Get-PWFolders -FolderPath resolution:
+        // - PWFolder-typed variables (explicit PW folder references)
+        // - Literal-typed variables whose value starts with @: (same semantics,
+        //   different value type — both need Code + ProjectGUID from PW)
         const pwFolderPaths = orderedCsbs
             .flatMap(csb => csb.variables)
-            .filter(v => v.valueType === 'PWFolder' && !!v.value)
+            .filter(v => (v.valueType === 'PWFolder' || (v.valueType === 'Literal' && isAtPath(v.value))) && !!v.value)
             .map(v => v.value);
         const resolvedMeta = await resolvePwFolderMetadataViaPwModule(conn, pwFolderPaths);
         for (const [k, meta] of resolvedMeta)
             pwFolderMetaByPath.set(k, meta);
         for (const csb of orderedCsbs) {
             for (const v of csb.variables) {
-                if (v.valueType !== 'PWFolder' || !v.value)
+                const isPwFolderVar = v.valueType === 'PWFolder';
+                const isLiteralAtPath = v.valueType === 'Literal' && isAtPath(v.value);
+                if ((!isPwFolderVar && !isLiteralAtPath) || !v.value)
                     continue;
                 const meta = pwFolderMetaByPath.get(normalisePwLogicalPathKey(v.value));
                 messages.push({
@@ -1650,11 +1656,11 @@ async function downloadPwFolderToDms(client, conn, pwFolderMetaByPath, pwLogical
  * yet been downloaded, and download them into additional dms directories.
  */
 async function downloadAdditionalPwFolders(client, conn, pwFolderMetaByPath, csbs, workDir, dmsPathMap, messages) {
-    const seenPaths = new Set(Object.values(dmsPathMap).map(e => e.pwLogicalPath.toLowerCase()));
+    const seenPaths = new Set(Object.values(dmsPathMap).map(e => normalisePwPathForLookup(e.pwLogicalPath)));
     for (const csb of csbs) {
         for (const v of csb.variables) {
             if (v.valueType === 'PWFolder' && v.value) {
-                const normalised = v.value.toLowerCase();
+                const normalised = normalisePwPathForLookup(v.value);
                 if (!seenPaths.has(normalised)) {
                     seenPaths.add(normalised);
                     await downloadPwFolderToDms(client, conn, pwFolderMetaByPath, v.value, workDir, dmsPathMap, messages);
@@ -1939,17 +1945,62 @@ function csbToCfgContent(csb, workDir, dmsPathMap) {
     return lines.join('\n');
 }
 /**
+ * Normalise a PW logical path for use as a lookup key.
+ *
+ * The same folder can appear in CSBs with several different path formats:
+ *   @:\Configuration\WorkSpaces\   (PW @: root prefix, backslashes)
+ *   \Configuration\WorkSpaces\     (backslash-rooted, no @:)
+ *   @:/Configuration/WorkSpaces/   (forward-slash variant)
+ *   Configuration/WorkSpaces       (relative, no leading separator)
+ *
+ * This function reduces all variants to a canonical lower-case
+ * forward-slash form without leading/trailing separators so that
+ * dmsPathMap lookups succeed regardless of which format was used
+ * when the folder was originally downloaded.
+ */
+function normalisePwPathForLookup(p) {
+    return p
+        .replace(/^@:[/\\]*/i, '') // strip @: datasource-root prefix
+        .replace(/\\/g, '/') // backslash → forward slash
+        .replace(/^\/+/, '') // strip leading slashes
+        .replace(/\/+$/, '') // strip trailing slashes
+        .toLowerCase();
+}
+/**
  * Resolve a CSB variable value based on its ValueType.
  */
 function resolveValueType(v, workDir, dmsPathMap) {
     const fwdWorkDir = workDir.replace(/\\/g, '/');
     switch (v.valueType) {
-        case 'Literal':
+        case 'Literal': {
+            // If the literal value is a PW logical path (@:\...) it should resolve
+            // to the same local dmsNNNNN/ directory as a PWFolder-typed variable
+            // would.  The folder will have been downloaded during
+            // resolveAtPathsRecursively() and recorded in dmsPathMap.
+            if (isAtPath(v.value)) {
+                const normVal = normalisePwPathForLookup(v.value);
+                const entry = Object.values(dmsPathMap).find(e => normalisePwPathForLookup(e.pwLogicalPath) === normVal);
+                if (entry) {
+                    return entry.dmsDir.replace(/\\/g, '/') + '/';
+                }
+                // Folder not yet in dmsPathMap (e.g. download failed).
+                // Fall back to folderCode / folderProjectId if they were populated.
+                const code = (v.folderCode ?? '').trim().toLowerCase();
+                if (/^dms\d+$/i.test(code)) {
+                    return `${fwdWorkDir}/${code}/`;
+                }
+                const projectId = v.folderProjectId;
+                if (typeof projectId === 'number' && Number.isFinite(projectId) && projectId > 0) {
+                    return `${fwdWorkDir}/dms${projectId}/`;
+                }
+            }
             return v.value;
+        }
         case 'PWFolder': {
-            // Look up in dmsPathMap by pwLogicalPath (case-insensitive)
-            const entry = Object.values(dmsPathMap).find(e => e.pwLogicalPath.replace(/[/\\]+$/, '').toLowerCase() ===
-                v.value.replace(/[/\\]+$/, '').toLowerCase());
+            // Look up in dmsPathMap by pwLogicalPath, normalising both sides so that
+            // @:\Config\, \Config\, @:/Config/, /Config/ all resolve to the same entry.
+            const normVal = normalisePwPathForLookup(v.value);
+            const entry = Object.values(dmsPathMap).find(e => normalisePwPathForLookup(e.pwLogicalPath) === normVal);
             if (entry) {
                 return entry.dmsDir.replace(/\\/g, '/') + '/';
             }

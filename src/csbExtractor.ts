@@ -1864,12 +1864,12 @@ async function downloadAdditionalPwFolders(
   dmsPathMap: DmsPathMap,
   messages: CsbExtractionResult['messages']
 ): Promise<void> {
-  const seenPaths = new Set(Object.values(dmsPathMap).map(e => e.pwLogicalPath.toLowerCase()));
+  const seenPaths = new Set(Object.values(dmsPathMap).map(e => normalisePwPathForLookup(e.pwLogicalPath)));
 
   for (const csb of csbs) {
     for (const v of csb.variables) {
       if (v.valueType === 'PWFolder' && v.value) {
-        const normalised = v.value.toLowerCase();
+        const normalised = normalisePwPathForLookup(v.value);
         if (!seenPaths.has(normalised)) {
           seenPaths.add(normalised);
           await downloadPwFolderToDms(client, conn, pwFolderMetaByPath, v.value, workDir, dmsPathMap, messages);
@@ -2189,6 +2189,29 @@ export function csbToCfgContent(
 }
 
 /**
+ * Normalise a PW logical path for use as a lookup key.
+ *
+ * The same folder can appear in CSBs with several different path formats:
+ *   @:\Configuration\WorkSpaces\   (PW @: root prefix, backslashes)
+ *   \Configuration\WorkSpaces\     (backslash-rooted, no @:)
+ *   @:/Configuration/WorkSpaces/   (forward-slash variant)
+ *   Configuration/WorkSpaces       (relative, no leading separator)
+ *
+ * This function reduces all variants to a canonical lower-case
+ * forward-slash form without leading/trailing separators so that
+ * dmsPathMap lookups succeed regardless of which format was used
+ * when the folder was originally downloaded.
+ */
+function normalisePwPathForLookup(p: string): string {
+  return p
+    .replace(/^@:[/\\]*/i, '') // strip @: datasource-root prefix
+    .replace(/\\/g, '/')       // backslash → forward slash
+    .replace(/^\/+/, '')       // strip leading slashes
+    .replace(/\/+$/, '')       // strip trailing slashes
+    .toLowerCase();
+}
+
+/**
  * Resolve a CSB variable value based on its ValueType.
  */
 function resolveValueType(
@@ -2205,9 +2228,9 @@ function resolveValueType(
       // would.  The folder will have been downloaded during
       // resolveAtPathsRecursively() and recorded in dmsPathMap.
       if (isAtPath(v.value)) {
-        const normVal = v.value.replace(/[/\\]+$/, '').toLowerCase();
+        const normVal = normalisePwPathForLookup(v.value);
         const entry = Object.values(dmsPathMap).find(
-          e => e.pwLogicalPath.replace(/[/\\]+$/, '').toLowerCase() === normVal
+          e => normalisePwPathForLookup(e.pwLogicalPath) === normVal
         );
         if (entry) {
           return entry.dmsDir.replace(/\\/g, '/') + '/';
@@ -2227,10 +2250,11 @@ function resolveValueType(
     }
 
     case 'PWFolder': {
-      // Look up in dmsPathMap by pwLogicalPath (case-insensitive)
+      // Look up in dmsPathMap by pwLogicalPath, normalising both sides so that
+      // @:\Config\, \Config\, @:/Config/, /Config/ all resolve to the same entry.
+      const normVal = normalisePwPathForLookup(v.value);
       const entry = Object.values(dmsPathMap).find(
-        e => e.pwLogicalPath.replace(/[/\\]+$/, '').toLowerCase() ===
-             v.value.replace(/[/\\]+$/, '').toLowerCase()
+        e => normalisePwPathForLookup(e.pwLogicalPath) === normVal
       );
       if (entry) {
         return entry.dmsDir.replace(/\\/g, '/') + '/';
