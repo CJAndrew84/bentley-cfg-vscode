@@ -137,6 +137,60 @@ Connections are saved and reused. Manage them with **`Bentley CFG: Manage Projec
 
 ---
 
+## Deploying a Workspace (DMWF)
+
+The extension can push a locally-authored workspace up to ProjectWise, enabling a full **Digital Managed Workspace Framework (DMWF)** round-trip: author locally → validate → deploy to PW.
+
+### What "deployment" means
+
+A Bentley DMWF deployment has two parts:
+
+| Part | What it is | How the extension handles it |
+|------|-----------|------------------------------|
+| **Repository files** | `.cfg` / standards files stored as regular PW documents | Uploaded automatically via WSG REST API |
+| **CSBs** (Configuration Settings Blocks) | Database-level variables injected before MicroStation opens | CSBs cannot be written via WSG. The extension generates a ready-to-run **PowerShell script** (`deploy-csb.ps1`) for the PW admin |
+
+### Deploy Workspace to ProjectWise
+
+**`Bentley CFG: Deploy Workspace to ProjectWise`** — four-step wizard:
+
+1. **Connection** — pick a saved PW connection or create a new one
+2. **Local folder** — choose the workspace root on your machine
+3. **Target folder** — browse to the PW folder that will host the files
+4. **File selection** — CFG files only, or CFG + standards (`.dgnlib`, `.cel`, seeds, etc.)
+
+The extension then:
+- Creates any missing sub-folders in PW (mirroring your local structure)
+- Uploads new documents; updates existing ones in place
+- Writes `deploy-csb.ps1` — a PowerShell script the PW admin runs once to create the Managed Workspace Profile and wire up the CSBs
+- Writes `deploy-report.txt` — a full per-file outcome log
+
+> **Re-deploying** is safe: files are updated in place and the CSB script checks for existing objects before creating new ones.
+
+### Export Deployment Package (offline)
+
+**`Bentley CFG: Export Deployment Package`** — same as above but without a live PW connection. Generates `deploy-csb.ps1` locally so you can hand the whole workspace folder to a PW administrator for manual import.
+
+### PowerShell CSB script (`deploy-csb.ps1`)
+
+The generated script uses the **PWPS_DAB** module (ships with PW Explorer CONNECT Edition):
+
+```powershell
+# Edit the $Config section at the top, then run:
+.\deploy-csb.ps1
+```
+
+It will:
+1. Connect to the datasource
+2. Create a **Managed Workspace Profile** for the workspace
+3. Create a **WorkSpace CSB** (Level 3) setting `_USTN_CONFIGURATION`, `_USTN_WORKSPACEROOT`, etc.
+4. Create one **WorkSet CSB** (Level 4) per detected workset
+5. Assign the profile to the chosen PW **Application**
+
+CSB creation is idempotent — objects that already exist are skipped.
+
+---
+
 ## Commands
 
 | Command | Description |
@@ -151,6 +205,8 @@ Connections are saved and reused. Manage them with **`Bentley CFG: Manage Projec
 | `Bentley CFG: Manage ProjectWise Connections` | Delete saved PW connections |
 | `Bentley CFG: Compare Loaded Workspaces` | Diff two previously loaded workspaces |
 | `Bentley CFG: Compare Two Workspace Folders` | Diff two local folders directly |
+| `Bentley CFG: Deploy Workspace to ProjectWise` | Upload local workspace files to PW + generate CSB script |
+| `Bentley CFG: Export Deployment Package` | Generate `deploy-csb.ps1` without a live PW connection |
 
 ---
 

@@ -107,6 +107,16 @@
         "command": "bentley-cfg.viewMasterTmp",
         "title": "Bentley CFG: View Generated Master Config",
         "icon": "$(file-code)"
+      },
+      {
+        "command": "bentley-cfg.deployWorkspaceToPw",
+        "title": "Bentley CFG: Deploy Workspace to ProjectWise",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "bentley-cfg.exportDeploymentPackage",
+        "title": "Bentley CFG: Export Deployment Package",
+        "icon": "$(package)"
       }
     ],
     "menus": {
@@ -158,6 +168,12 @@
         },
         {
           "command": "bentley-cfg.viewMasterTmp"
+        },
+        {
+          "command": "bentley-cfg.deployWorkspaceToPw"
+        },
+        {
+          "command": "bentley-cfg.exportDeploymentPackage"
         }
       ]
     }

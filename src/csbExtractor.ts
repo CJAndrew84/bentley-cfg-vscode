@@ -1669,19 +1669,19 @@ function extractLastDirPiece(csbs: CsbBlock[], varName: string): string | undefi
  * PW working directory (used for PW_WORKDIR seeding) can be passed back
  * alongside the CSBs without a second round-trip.
  */
-function parsePowerShellCsbJson(json: string): { csbs: CsbBlock[]; workingDir: string } {
+function parsePowerShellCsbJson(json: string): { csbs: CsbBlock[]; pwWorkingDir: string } {
   const clean = json.trim();
   const raw = JSON.parse(clean);
 
   // Detect wrapper object format
   let csbArray: any[];
-  let workingDir = '';
+  let pwWorkingDir = '';
 
   if (Array.isArray(raw)) {
     csbArray = raw;
   } else if (raw && typeof raw === 'object' && (raw.Csbs ?? raw.csbs)) {
     csbArray = raw.Csbs ?? raw.csbs ?? [];
-    workingDir = String(raw.WorkingDir ?? raw.workingDir ?? '');
+    pwWorkingDir = String(raw.WorkingDir ?? raw.workingDir ?? '');
   } else {
     // Single CSB object
     csbArray = [raw];
@@ -1702,7 +1702,7 @@ function parsePowerShellCsbJson(json: string): { csbs: CsbBlock[]; workingDir: s
     linkedCsbIds: Array.isArray(item.LinkedIds) ? item.LinkedIds.map(Number) : [],
   } as CsbBlock));
 
-  return { csbs, workingDir };
+  return { csbs, pwWorkingDir };
 }
 
 /**
