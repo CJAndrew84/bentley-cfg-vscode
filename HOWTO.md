@@ -315,7 +315,13 @@ Hand the workspace folder (with the script) to your PW administrator for manual 
 
 ### Running the PowerShell CSB script
 
-The generated `deploy-csb.ps1` uses the **PWPS_DAB** module (ships with PW Explorer CONNECT Edition). Edit the `$Config` section at the top of the script, then run it from a PowerShell prompt:
+The generated `deploy-csb.ps1` uses the **PWPS_DAB** module, available on [PowerShell Gallery](https://www.powershellgallery.com/packages/PWPS_DAB). Install it once with:
+
+```powershell
+Install-Module -Name PWPS_DAB
+```
+
+Edit the `$Config` section at the top of the script, then run it from a PowerShell prompt:
 
 ```powershell
 .\deploy-csb.ps1
