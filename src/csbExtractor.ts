@@ -381,15 +381,21 @@ export async function extractManagedWorkspace(
   logTrackedVariable('After CSB ordering', orderedCsbs);
 
   if (backend === 'powershell-pwmodule') {
+    // Collect all PW folder paths that need Get-PWFolders -FolderPath resolution:
+    // - PWFolder-typed variables (explicit PW folder references)
+    // - Literal-typed variables whose value starts with @: (same semantics,
+    //   different value type — both need Code + ProjectGUID from PW)
     const pwFolderPaths = orderedCsbs
       .flatMap(csb => csb.variables)
-      .filter(v => v.valueType === 'PWFolder' && !!v.value)
+      .filter(v => (v.valueType === 'PWFolder' || (v.valueType === 'Literal' && isAtPath(v.value))) && !!v.value)
       .map(v => v.value);
     const resolvedMeta = await resolvePwFolderMetadataViaPwModule(conn, pwFolderPaths);
     for (const [k, meta] of resolvedMeta) pwFolderMetaByPath.set(k, meta);
     for (const csb of orderedCsbs) {
       for (const v of csb.variables) {
-        if (v.valueType !== 'PWFolder' || !v.value) continue;
+        const isPwFolderVar = v.valueType === 'PWFolder';
+        const isLiteralAtPath = v.valueType === 'Literal' && isAtPath(v.value);
+        if ((!isPwFolderVar && !isLiteralAtPath) || !v.value) continue;
         const meta = pwFolderMetaByPath.get(normalisePwLogicalPathKey(v.value));
         messages.push({
           level: 'info',
@@ -2193,8 +2199,32 @@ function resolveValueType(
   const fwdWorkDir = workDir.replace(/\\/g, '/');
 
   switch (v.valueType) {
-    case 'Literal':
+    case 'Literal': {
+      // If the literal value is a PW logical path (@:\...) it should resolve
+      // to the same local dmsNNNNN/ directory as a PWFolder-typed variable
+      // would.  The folder will have been downloaded during
+      // resolveAtPathsRecursively() and recorded in dmsPathMap.
+      if (isAtPath(v.value)) {
+        const normVal = v.value.replace(/[/\\]+$/, '').toLowerCase();
+        const entry = Object.values(dmsPathMap).find(
+          e => e.pwLogicalPath.replace(/[/\\]+$/, '').toLowerCase() === normVal
+        );
+        if (entry) {
+          return entry.dmsDir.replace(/\\/g, '/') + '/';
+        }
+        // Folder not yet in dmsPathMap (e.g. download failed).
+        // Fall back to folderCode / folderProjectId if they were populated.
+        const code = (v.folderCode ?? '').trim().toLowerCase();
+        if (/^dms\d+$/i.test(code)) {
+          return `${fwdWorkDir}/${code}/`;
+        }
+        const projectId = v.folderProjectId;
+        if (typeof projectId === 'number' && Number.isFinite(projectId) && projectId > 0) {
+          return `${fwdWorkDir}/dms${projectId}/`;
+        }
+      }
       return v.value;
+    }
 
     case 'PWFolder': {
       // Look up in dmsPathMap by pwLogicalPath (case-insensitive)
