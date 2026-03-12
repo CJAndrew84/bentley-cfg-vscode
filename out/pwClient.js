@@ -100,6 +100,55 @@ class ProjectWiseClient {
         const data = await this.get(`/Project/${projectGuid}/Document`);
         return (data.instances ?? []).map(mapDocument);
     }
+    /** Get one project/folder by GUID with full metadata when available. */
+    async getProjectByGuid(projectGuid) {
+        try {
+            const data = await this.get(`/Project/${projectGuid}`);
+            const inst = data?.instance ?? data;
+            if (!inst)
+                return null;
+            return mapProject(inst);
+        }
+        catch {
+            return null;
+        }
+    }
+    /**
+     * List documents in a folder with a Name/FileName LIKE filter.
+     * Pattern accepts either WSG '%' wildcards or shell '*' wildcards.
+     */
+    async listDocumentsByNameLike(projectGuid, pattern) {
+        const like = normaliseLikePattern(pattern);
+        const fileNameFilter = `$filter=FileName+like+'${escapeFilterLiteral(like)}'`;
+        try {
+            const data = await this.get(`/Project/${projectGuid}/Document`, fileNameFilter);
+            const docs = (data.instances ?? []).map(mapDocument);
+            if (docs.length > 0)
+                return docs;
+        }
+        catch {
+            // fall through to Name fallback
+        }
+        const nameFilter = `$filter=Name+like+'${escapeFilterLiteral(like)}'`;
+        const data = await this.get(`/Project/${projectGuid}/Document`, nameFilter);
+        return (data.instances ?? []).map(mapDocument);
+    }
+    /** Download matching cfg/ucf/pcf docs by Name/FileName LIKE filter from one folder. */
+    async fetchCfgFilesByNameLike(projectGuid, pattern) {
+        const docs = await this.listDocumentsByNameLike(projectGuid, pattern);
+        const cfgDocs = docs.filter(d => isCfgFile(d.fileName));
+        const results = [];
+        for (const doc of cfgDocs) {
+            try {
+                const content = await this.downloadDocumentContent(doc.instanceId);
+                results.push({ pwPath: `/${doc.fileName}`, content });
+            }
+            catch {
+                // skip undownloadable files
+            }
+        }
+        return results;
+    }
     /** Download a document's file content as a string */
     async downloadDocumentContent(docInstanceId) {
         const url = `${this.baseUrl}/Document/${docInstanceId}/$file`;
@@ -361,12 +410,23 @@ function stripWsSuffix(hostname) {
 function isCfgFile(name) {
     return /\.(cfg|ucf|pcf)$/i.test(name);
 }
+function normaliseLikePattern(pattern) {
+    return (pattern || '*').replace(/\*/g, '%');
+}
+function escapeFilterLiteral(value) {
+    return value.replace(/'/g, "''");
+}
 function mapProject(inst) {
     const p = inst.properties ?? {};
+    const projectIdRaw = p.ProjectID ?? p.ProjectId ?? p.projectId ?? p.ID ?? p.Id;
+    const parsedProjectId = Number.parseInt(String(projectIdRaw ?? ''), 10);
     return {
         instanceId: inst.instanceId ?? '',
         name: p.Name ?? p.Label ?? inst.instanceId,
         description: p.Description ?? '',
+        code: p.Code ?? p.ProjectCode ?? p.code ?? '',
+        projectId: Number.isFinite(parsedProjectId) ? parsedProjectId : undefined,
+        fullPath: p.FullPath ?? p.Path ?? p.fullPath ?? '',
         parentGuid: p.ParentGuid ?? '',
         isRichProject: toBool(p.IsRichProject ?? p.isRichProject),
     };

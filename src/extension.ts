@@ -642,6 +642,35 @@ async function checkDmwfVersion(context: vscode.ExtensionContext): Promise<void>
 
 export function activate(context: vscode.ExtensionContext): void {
   const selector: vscode.DocumentSelector = { language: 'bentley-cfg' };
+  const outputChannel = vscode.window.createOutputChannel('Bentley CFG');
+  context.subscriptions.push(outputChannel);
+
+  const logPwExtraction = (
+    label: string,
+    extraction: {
+      backend: string;
+      csbs: Array<unknown>;
+      workDir: string;
+      masterTmpPath: string;
+      workspaceName?: string;
+      worksetName?: string;
+      messages: Array<{ level: 'info' | 'warning' | 'error'; text: string }>;
+    }
+  ): void => {
+    outputChannel.appendLine('────────────────────────────────────────────────────────────');
+    outputChannel.appendLine(`[${new Date().toISOString()}] ProjectWise Managed Workspace load`);
+    outputChannel.appendLine(`Label: ${label}`);
+    outputChannel.appendLine(`Backend: ${extraction.backend}`);
+    outputChannel.appendLine(`CSBs: ${extraction.csbs.length}`);
+    outputChannel.appendLine(`WorkDir: ${extraction.workDir}`);
+    outputChannel.appendLine(`MasterTmp: ${extraction.masterTmpPath}`);
+    if (extraction.workspaceName) outputChannel.appendLine(`Workspace: ${extraction.workspaceName}`);
+    if (extraction.worksetName) outputChannel.appendLine(`WorkSet: ${extraction.worksetName}`);
+    outputChannel.appendLine('Messages:');
+    for (const msg of extraction.messages) {
+      outputChannel.appendLine(`  [${msg.level.toUpperCase()}] ${msg.text}`);
+    }
+  };
 
   // ── Language features ──────────────────────────────────────────────────────
 
@@ -941,16 +970,21 @@ export function activate(context: vscode.ExtensionContext): void {
           folderGuid,
           documentGuid,
         }, client);
+        logPwExtraction(label, extraction);
 
         const backendMsg = `Backend: ${extraction.backend} | CSBs: ${extraction.csbs.length}`;
         const warnings = extraction.messages.filter(m => m.level === 'warning' || m.level === 'error');
-        if (warnings.length > 0) {
+        if (warnings.length > 0 || extraction.csbs.length === 0) {
+          outputChannel.show(true);
           vscode.window.showWarningMessage(
             `CSB extraction issues (${warnings.length}) — ${backendMsg}`,
-            'View Master .tmp'
+            'View Master .tmp',
+            'Show Output'
           ).then(choice => {
             if (choice === 'View Master .tmp') {
               vscode.window.showTextDocument(vscode.Uri.file(extraction.masterTmpPath), { preview: true });
+            } else if (choice === 'Show Output') {
+              outputChannel.show(true);
             }
           });
         }
@@ -967,6 +1001,10 @@ export function activate(context: vscode.ExtensionContext): void {
           (extraction.worksetName ? ` | WorkSet: ${extraction.worksetName}` : '')
         );
       } catch (e) {
+        outputChannel.appendLine('────────────────────────────────────────────────────────────');
+        outputChannel.appendLine(`[${new Date().toISOString()}] ProjectWise error`);
+        outputChannel.appendLine(String(e));
+        outputChannel.show(true);
         vscode.window.showErrorMessage(`ProjectWise error: ${e}`);
       }
     })

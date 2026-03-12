@@ -76,6 +76,8 @@ export interface CsbVariable {
   name: string;
   operator: '=' | '>' | '<' | ':';
   value: string;
+  folderCode?: string;
+  folderProjectId?: number;
   /**
    * Raw value type from PW:
    *  Literal      — use value as-is
@@ -217,6 +219,14 @@ export interface DmsPathMap {
   };
 }
 
+interface PwFolderModuleMetadata {
+  path: string;
+  code?: string;
+  projectId?: number;
+  projectGuid?: string;
+  lookupUsed?: string;
+}
+
 export interface CsbExtractionResult {
   /** Path to master .tmp — equivalent to the -wc argument passed to MicroStation */
   masterTmpPath: string;
@@ -249,6 +259,7 @@ export interface CsbExtractionResult {
    * user's actual ProjectWise working copy location.
    */
   pwWorkingDir?: string;
+  selectedFolderLocalDir?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -274,13 +285,36 @@ export async function extractManagedWorkspace(
   ctx: ManagedWorkspaceContext,
   client: ProjectWiseClient
 ): Promise<CsbExtractionResult> {
-  const workDir = ctx.workDir ?? path.join(os.tmpdir(), `pw-managed-ws-${Date.now()}`);
-  const wsDir = path.join(workDir, 'workspace');
-  fs.mkdirSync(wsDir, { recursive: true });
+  let workDir = ctx.workDir ?? '';
+  let wsDir = '';
 
   const messages: CsbExtractionResult['messages'] = [];
   const dmsPathMap: DmsPathMap = {};
+  const pwFolderMetaByPath = new Map<string, PwFolderModuleMetadata>();
   let pwWorkingDir: string | undefined;
+  let selectedFolderLocalDir: string | undefined;
+
+  const logTrackedVariable = (stage: string, blocks: CsbBlock[]): void => {
+    const tracked = blocks
+      .flatMap(csb => csb.variables.map(v => ({ csb, v })))
+      .find(({ v }) => v.name === '_DYNAMIC_DATASOURCE_BENTLEYROOT');
+
+    if (!tracked) {
+      messages.push({
+        level: 'info',
+        text: `${stage}: _DYNAMIC_DATASOURCE_BENTLEYROOT not present`,
+      });
+      return;
+    }
+
+    messages.push({
+      level: 'info',
+      text:
+        `${stage}: _DYNAMIC_DATASOURCE_BENTLEYROOT ` +
+        `value="${tracked.v.value}" type=${tracked.v.valueType} operator=${tracked.v.operator} ` +
+        `csb=${tracked.csb.id}:${tracked.csb.name}`,
+    });
+  };
 
   // ── Step 1: Fetch CSBs ────────────────────────────────────────────────────
   let csbs: CsbBlock[] | null = null;
@@ -291,6 +325,10 @@ export async function extractManagedWorkspace(
     try {
       const result = await readCsbsViaPwModule(conn, ctx);
       csbs = result.csbs;
+      logTrackedVariable('After PW module parse', csbs);
+      for (const line of result.debug ?? []) {
+        messages.push({ level: 'info', text: `PW module debug: ${line}` });
+      }
       if (result.pwWorkingDir) {
         pwWorkingDir = result.pwWorkingDir;
         messages.push({ level: 'info', text: `PW working directory: ${pwWorkingDir}` });
@@ -340,6 +378,34 @@ export async function extractManagedWorkspace(
 
   // ── Step 2: Sort into processing order ────────────────────────────────────
   const orderedCsbs = orderCsbs(csbs);
+  logTrackedVariable('After CSB ordering', orderedCsbs);
+
+  if (backend === 'powershell-pwmodule') {
+    const pwFolderPaths = orderedCsbs
+      .flatMap(csb => csb.variables)
+      .filter(v => v.valueType === 'PWFolder' && !!v.value)
+      .map(v => v.value);
+    const resolvedMeta = await resolvePwFolderMetadataViaPwModule(conn, pwFolderPaths);
+    for (const [k, meta] of resolvedMeta) pwFolderMetaByPath.set(k, meta);
+    for (const csb of orderedCsbs) {
+      for (const v of csb.variables) {
+        if (v.valueType !== 'PWFolder' || !v.value) continue;
+        const meta = pwFolderMetaByPath.get(normalisePwLogicalPathKey(v.value));
+        messages.push({
+          level: 'info',
+          text: `PWFolder metadata: path="${v.value}" code="${meta?.code ?? ''}" projectId="${meta?.projectId ?? ''}" lookup="${meta?.lookupUsed ?? ''}"`,
+        });
+        if (meta?.code) v.folderCode = meta.code;
+        if (meta?.projectId) v.folderProjectId = meta.projectId;
+      }
+    }
+  }
+
+  if (!workDir) {
+    workDir = pwWorkingDir ?? path.join(os.tmpdir(), `pw-managed-ws-${Date.now()}`);
+  }
+  wsDir = path.join(workDir, 'workspace');
+  fs.mkdirSync(wsDir, { recursive: true });
 
   // ── Step 3: Derive workspace / workset names ──────────────────────────────
   // These must be known before writing the master .tmp so the cfg parser
@@ -354,20 +420,43 @@ export async function extractManagedWorkspace(
   const configRoot = extractConfigurationVariable(orderedCsbs);
   if (configRoot) {
     messages.push({ level: 'info', text: `_USTN_CONFIGURATION: ${configRoot}` });
-    await downloadPwFolderToDms(client, configRoot, workDir, dmsPathMap, messages);
+    await downloadPwFolderToDms(client, conn, pwFolderMetaByPath, configRoot, workDir, dmsPathMap, messages);
   }
 
   // Second pass: any other PWFolder type variables not yet downloaded
-  await downloadAdditionalPwFolders(client, orderedCsbs, workDir, dmsPathMap, messages);
+  await downloadAdditionalPwFolders(client, conn, pwFolderMetaByPath, orderedCsbs, workDir, dmsPathMap, messages);
 
   // Third pass: scan Literal CSB values and downloaded CFG files for @: paths.
   // This resolves recursive include chains — e.g. a downloaded WorkSpace.cfg that
   // %includes @:\Configuration\Organization\*.cfg triggers a further download of
   // the Organization folder. Continues until no new @: paths are found (up to 10 passes).
-  await resolveAtPathsRecursively(client, orderedCsbs, workDir, dmsPathMap, messages);
+  await resolveAtPathsRecursively(client, conn, pwFolderMetaByPath, orderedCsbs, workDir, dmsPathMap, messages);
+
+  if (ctx.folderGuid) {
+    const selectedFolderMeta = await resolvePwFolderByGuidViaPwModule(conn, ctx.folderGuid);
+    const selectedCode = selectedFolderMeta?.code?.trim();
+    const selectedProjectId = selectedFolderMeta?.projectId;
+    if (selectedCode && /^dms\d+$/i.test(selectedCode)) {
+      selectedFolderLocalDir = path.join(workDir, selectedCode.toLowerCase());
+    } else if (typeof selectedProjectId === 'number' && Number.isFinite(selectedProjectId) && selectedProjectId > 0) {
+      selectedFolderLocalDir = path.join(workDir, `dms${selectedProjectId}`);
+    }
+  }
 
   // ── Step 5: Write {CsbID}.cfg files ───────────────────────────────────────
   for (const csb of orderedCsbs) {
+    const tracked = csb.variables.find(v => v.name === '_DYNAMIC_DATASOURCE_BENTLEYROOT');
+    if (tracked) {
+      const resolvedTracked = resolveValueType(tracked, workDir, dmsPathMap);
+      messages.push({
+        level: 'info',
+        text:
+          `Before cfg write: _DYNAMIC_DATASOURCE_BENTLEYROOT ` +
+          `value="${tracked.value}" type=${tracked.valueType} resolved="${resolvedTracked ?? ''}" ` +
+          `csb=${csb.id}:${csb.name}`,
+      });
+    }
+
     const cfgContent = csbToCfgContent(csb, workDir, dmsPathMap);
     const cfgPath = path.join(wsDir, `${csb.id}.cfg`);
     fs.writeFileSync(cfgPath, cfgContent, 'utf8');
@@ -380,14 +469,14 @@ export async function extractManagedWorkspace(
   // ── Step 6: Write master .tmp ─────────────────────────────────────────────
   const masterTmpPath = path.join(wsDir, `${ctx.datasource}.tmp`);
   const masterContent = buildMasterTmp(
-    orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceName, worksetName, pwWorkingDir
+    orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceName, worksetName, pwWorkingDir, selectedFolderLocalDir
   );
   fs.writeFileSync(masterTmpPath, masterContent, 'utf8');
   messages.push({ level: 'info', text: `Master config: ${path.basename(masterTmpPath)}` });
 
   return {
     masterTmpPath, workDir, csbs: orderedCsbs, dmsPathMap,
-    workspaceName, worksetName, messages, backend, pwWorkingDir,
+    workspaceName, worksetName, messages, backend, pwWorkingDir, selectedFolderLocalDir,
   };
 }
 
@@ -487,326 +576,767 @@ function isPowerShellPwModuleAvailable(): boolean {
   return detectPowerShellPwModule() !== null;
 }
 
+function getPwServerHostname(conn: PwConnection): string {
+  const rawHost = (() => {
+    try { return new URL(conn.wsgUrl).hostname; }
+    catch { return conn.wsgUrl; }
+  })();
+  return rawHost.replace(/-ws(?=\.|$)/i, '');
+}
+
+function normalisePwLogicalPathKey(p: string): string {
+  return p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+async function resolvePwFolderMetadataForPathViaPwModule(
+  conn: PwConnection,
+  pwPath: string
+): Promise<PwFolderModuleMetadata | undefined> {
+  const moduleName = detectPowerShellPwModule();
+  if (!moduleName || !pwPath.trim()) return undefined;
+
+  const script = `
+param($ServerPart, $DatasourceName, $PwPath)
+$WarningPreference = 'SilentlyContinue'
+$VerbosePreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
+
+try {
+  Import-Module "${moduleName}" -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null | Out-Null
+} catch {
+  throw "Failed to import module '${moduleName}': \$(\$_.Exception.Message)"
+}
+
+$datasourceQualified = "$($ServerPart):$($DatasourceName)"
+$attempts = @($datasourceQualified)
+if ($DatasourceName -and $DatasourceName -notmatch ':') { $attempts += $DatasourceName }
+
+$loggedIn = \$false
+$lastError = ''
+
+foreach ($attempt in ($attempts | Select-Object -Unique)) {
+  try {
+    New-PWLogin -BentleyIMS -DatasourceName $attempt -NonAdminLogin -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null | Out-Null
+  } catch {
+    $lastError = \$_.Exception.Message
+    continue
+  }
+
+  $currentDs = \$null
+  try {
+    $currentDs = Get-PWCurrentDatasource -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null
+  } catch {
+    $lastError = "Get-PWCurrentDatasource failed: \$(\$_.Exception.Message)"
+    continue
+  }
+
+  if ($currentDs) {
+    $loggedIn = \$true
+    break
+  }
+}
+
+if (-not $loggedIn) {
+  throw "Could not establish ProjectWise session for folder metadata resolution. Last error: \$lastError"
+}
+
+$base = ([string]$PwPath) -replace '/', '\\\\'
+$candidates = [System.Collections.Generic.List[string]]::new()
+foreach ($candidate in @(
+  $base,
+  ($base.TrimEnd('\\\\') + '\\\\'),
+  ('\\\\' + $base.TrimStart('\\\\')),
+  ('\\\\' + $base.Trim('\\\\') + '\\\\')
+)) {
+  if (-not [string]::IsNullOrWhiteSpace($candidate) -and -not ($candidates -contains $candidate)) {
+    [void]$candidates.Add($candidate)
+  }
+}
+
+$folder = \$null
+$lookupUsed = ''
+$attempts = \$candidates.Count
+
+foreach ($lookup in $candidates) {
+  try {
+    $folder = Get-PWFolders -FolderPath $lookup -JustOne -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null
+    if ($folder) {
+      $lookupUsed = [string]$lookup
+      break
+    }
+  } catch {
+    \$lastError = \$_.Exception.Message
+  }
+}
+
+if (-not $folder) {
+  throw "Get-PWFolders failed after \$attempts attempts for path '\$PwPath'. LastError: \$lastError"
+}
+
+$projectId = 0
+[void][int]::TryParse([string]$folder.ProjectID, [ref]$projectId)
+@{
+  Path = [string]$PwPath
+  Code = [string]\$folder.Code
+  ProjectID = $projectId
+  ProjectGUID = [string](\$folder.ProjectGUIDString ?? \$folder.ProjectGUID)
+  LookupUsed = $lookupUsed
+} | ConvertTo-Json -Depth 6
+`;
+
+  const tempScript = path.join(os.tmpdir(), `pw-folder-meta-${Date.now()}.ps1`);
+  try {
+    fs.writeFileSync(tempScript, script, 'utf8');
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', tempScript,
+      '-ServerPart', getPwServerHostname(conn),
+      '-DatasourceName', conn.datasource,
+      '-PwPath', pwPath,
+    ], { timeout: 180000, maxBuffer: 20 * 1024 * 1024 });
+
+    const stdout = result.stdout?.toString() ?? '';
+    const stderr = result.stderr?.toString() ?? '';
+    
+    if (!stdout.trim()) {
+      // If no stdout, the script failed. Log stderr if available.
+      return undefined;
+    }
+    
+    const item = JSON.parse(extractJsonPayload(stdout));
+    return {
+      path: String(item.Path ?? pwPath),
+      code: String(item.Code ?? '').trim() || undefined,
+      projectId: Number.isFinite(Number(item.ProjectID)) ? Number(item.ProjectID) : undefined,
+      projectGuid: String(item.ProjectGUID ?? '').trim() || undefined,
+      lookupUsed: String(item.LookupUsed ?? '').trim() || undefined,
+    };
+  } catch {
+    return undefined;
+  } finally {
+    try { fs.unlinkSync(tempScript); } catch {}
+  }
+}
+
+async function resolvePwFolderMetadataViaPwModule(
+  conn: PwConnection,
+  paths: string[]
+): Promise<Map<string, PwFolderModuleMetadata>> {
+  const outMap = new Map<string, PwFolderModuleMetadata>();
+  const uniquePaths = [...new Set(paths.map(p => p.trim()).filter(Boolean))];
+  for (const pwPath of uniquePaths) {
+    const meta = await resolvePwFolderMetadataForPathViaPwModule(conn, pwPath);
+    if (meta) {
+      outMap.set(normalisePwLogicalPathKey(meta.path), meta);
+    }
+  }
+  return outMap;
+}
+
+async function resolvePwFolderByGuidViaPwModule(
+  conn: PwConnection,
+  folderGuid?: string
+): Promise<PwFolderModuleMetadata | undefined> {
+  if (!folderGuid) return undefined;
+  const moduleName = detectPowerShellPwModule();
+  if (!moduleName) return undefined;
+
+  const script = `
+param($ServerPart, $DatasourceName, $FolderGuid)
+$WarningPreference = 'SilentlyContinue'
+$VerbosePreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
+
+try {
+  Import-Module "${moduleName}" -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null | Out-Null
+} catch {
+  throw "Failed to import module '${moduleName}': \$(\$_.Exception.Message)"
+}
+
+$datasourceQualified = "$($ServerPart):$($DatasourceName)"
+$attempts = @($datasourceQualified)
+if ($DatasourceName -and $DatasourceName -notmatch ':') { $attempts += $DatasourceName }
+
+$loggedIn = \$false
+$lastError = ''
+
+foreach ($attempt in ($attempts | Select-Object -Unique)) {
+  try {
+    New-PWLogin -BentleyIMS -DatasourceName $attempt -NonAdminLogin -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null | Out-Null
+  } catch {
+    $lastError = \$_.Exception.Message
+    continue
+  }
+
+  $currentDs = \$null
+  try {
+    $currentDs = Get-PWCurrentDatasource -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null
+  } catch {
+    $lastError = "Get-PWCurrentDatasource failed: \$(\$_.Exception.Message)"
+    continue
+  }
+
+  if ($currentDs) {
+    $loggedIn = \$true
+    break
+  }
+}
+
+if (-not $loggedIn) {
+  throw "Could not establish ProjectWise session for folder GUID resolution. Last error: \$lastError"
+}
+
+try {
+  $folder = Get-PWFoldersByGUIDs -FolderGUIDs $FolderGuid -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null
+} catch {
+  throw "Get-PWFoldersByGUIDs failed for GUID '\$FolderGuid': \$(\$_.Exception.Message)"
+}
+
+if (-not $folder) {
+  throw "Get-PWFoldersByGUIDs returned no folder for GUID '\$FolderGuid'"
+}
+
+$projectId = 0
+[void][int]::TryParse([string]$folder.ProjectID, [ref]$projectId)
+@{
+  Path = [string]\$folder.FullPath
+  Code = [string]\$folder.Code
+  ProjectID = $projectId
+  ProjectGUID = [string](\$folder.ProjectGUIDString ?? \$folder.ProjectGUID)
+} | ConvertTo-Json -Depth 6
+`;
+
+  const tempScript = path.join(os.tmpdir(), `pw-folder-guid-${Date.now()}.ps1`);
+  try {
+    fs.writeFileSync(tempScript, script, 'utf8');
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', tempScript,
+      '-ServerPart', getPwServerHostname(conn),
+      '-DatasourceName', conn.datasource,
+      '-FolderGuid', folderGuid,
+    ], { timeout: 180000, maxBuffer: 20 * 1024 * 1024 });
+    const stdout = result.stdout?.toString() ?? '';
+    const stderr = result.stderr?.toString() ?? '';
+    
+    if (!stdout.trim()) {
+      return undefined;
+    }
+    
+    const item = JSON.parse(extractJsonPayload(stdout));
+    return {
+      path: String(item.Path ?? ''),
+      code: String(item.Code ?? '').trim() || undefined,
+      projectId: Number.isFinite(Number(item.ProjectID)) ? Number(item.ProjectID) : undefined,
+      projectGuid: String(item.ProjectGUID ?? '').trim() || undefined,
+    };
+  } catch {
+    return undefined;
+  } finally {
+    try { fs.unlinkSync(tempScript); } catch {}
+  }
+}
+
 async function readCsbsViaPwModule(
   conn: PwConnection,
   ctx: ManagedWorkspaceContext
-): Promise<{ csbs: CsbBlock[]; pwWorkingDir: string }> {
+): Promise<{ csbs: CsbBlock[]; pwWorkingDir: string; debug?: string[] }> {
   const moduleName = detectPowerShellPwModule();
   if (!moduleName) {
     throw new Error('Neither PWPS_DAB nor ProjectWise PowerShell module is available.');
   }
 
-  // ── pwps_dab Backend A script ─────────────────────────────────────────────
-  //
-  // CSB extraction via pwps_dab follows this flow:
-  //
-  //   1. Open-PWDatasource       — authenticate and connect
-  //   2. Resolve the document's folder (if DocumentGuid supplied)
-  //      Get-PWDocumentsByGuid / Get-PWDocument → document.FolderGuid
-  //   3. Resolve the Application → Managed Workspace Profile
-  //      Get-PWApplication (by numeric ApplicationId)
-  //   4. Get all CSBs for the profile (all levels)
-  //      The correct pwps_dab cmdlet for this step is documented at
-  //      https://powerwisescripting.blog/ — probe dynamically since the
-  //      exact cmdlet name varies across module versions.
-  //   5. Get folder-assigned CSBs (WorkSet/Discipline level)
-  //      Get-PWFoldersByGuids / Get-PWFolder — look up the target folder,
-  //      then retrieve CSBs assigned directly to it.
-  //
-  // Variable properties returned by pwps_dab:
-  //   .Name        — CFG variable name (e.g. "_USTN_CONFIGURATION")
-  //   .Operator    — assignment operator string: "=", ">", "<", ":"
-  //   .Value       — raw value as stored in PW (may be a PW folder path)
-  //   .ValueType   — "Literal" | "PWFolder" | "dms_project" | "LastDirPiece"
-  //   .IsLocked    — boolean; maps to %lock directive in generated .cfg
-  //
-  // Note: CSBs do not support preprocessor directives (%include, %if, etc.).
-  // The only "directive" produced from a CSB is the %level header and %lock
-  // lines, both of which are generated by csbToCfgContent() in TypeScript.
+  if (!ctx.folderGuid) {
+    throw new Error('PW module backend now requires a folder GUID (ctx.folderGuid).');
+  }
 
   const script = `
-param($Server, $Datasource, $Username, $Password, $ApplicationId, $FolderGuid, $DocumentGuid)
-Import-Module "${moduleName}" -ErrorAction Stop
+param($ServerPart, $DatasourceName, $FolderGuid)
+$WarningPreference = 'SilentlyContinue'
+$VerbosePreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
 
-# ── Authentication ─────────────────────────────────────────────────────────────
-# pwps_dab supports two login patterns depending on version:
-#
-#   New-PWLogin (preferred, modern):
-#     -ProjectWiseServer "server:datasource"
-#     The server part is the PW server hostname WITHOUT the -ws suffix.
-#     The datasource is the name configured in ProjectWise Administrator.
-#     Combined format: "server.company.com:MyDatasource"
-#
-#   Open-PWDatasource (legacy):
-#     -Server hostname  -Datasource name  -Credential $creds
-#
-# We probe for New-PWLogin first (as the blog documents it as the current API).
+Import-Module "${moduleName}" -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null | Out-Null
 
-$loginCmdlet = @('New-PWLogin','Open-PWDatasource') |
-  Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
-  Select-Object -First 1
+$datasourceQualified = "$($ServerPart):$($DatasourceName)"
 
-if (-not $loginCmdlet) {
-  throw "No login cmdlet found in module ${moduleName}. Expected 'New-PWLogin' or 'Open-PWDatasource'."
+$loginDebug = [System.Collections.Generic.List[string]]::new()
+$loginAttempts = [System.Collections.Generic.List[string]]::new()
+$loginAttempts.Add($datasourceQualified)
+if ($DatasourceName -and $DatasourceName -notmatch ':') {
+  $loginAttempts.Add($DatasourceName)
 }
 
-if ($loginCmdlet -eq 'New-PWLogin') {
-  # "server:datasource" — $Server is already the hostname without -ws suffix (stripped by TS).
-  # $Datasource is the name configured in ProjectWise Administrator.
-  New-PWLogin -ProjectWiseServer "$Server:$Datasource" -UserName $Username -Password $Password -ErrorAction Stop | Out-Null
-} else {
-  $secPass = ConvertTo-SecureString $Password -AsPlainText -Force
-  $creds   = New-Object System.Management.Automation.PSCredential($Username, $secPass)
-  Open-PWDatasource -Server $Server -Datasource $Datasource -Credential $creds -ErrorAction Stop | Out-Null
-}
+$effectiveDatasourceName = $DatasourceName
+$loggedIn = $false
 
-# ── Get the PW working directory for this datasource ──────────────────────────
-# The working directory is the local folder where PW copies out checked-out
-# files. It is needed for PW_WORKDIR seeding and for DMS_PROJECT() resolution.
-# pwps_dab exposes this via the datasource info object.
-$pwWorkingDir = ''
-$dsCmdlet = @('Get-PWCurrentDatasource','Get-PWDatasource','Get-PWDatasourceProperties') |
-  Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
-  Select-Object -First 1
-
-if ($dsCmdlet) {
+foreach ($attempt in ($loginAttempts | Select-Object -Unique)) {
   try {
-    $dsInfo = & $dsCmdlet -ErrorAction SilentlyContinue
-    $pwWorkingDir = [string]($dsInfo.WorkingDirectory ??
-                             $dsInfo.LocalWorkingDirectory ??
-                             $dsInfo.LocalWorkDir ??
-                             $dsInfo.WorkDir ?? '')
+    New-PWLogin -BentleyIMS -DatasourceName $attempt -NonAdminLogin -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null | Out-Null
+  } catch {
+    $loginDebug.Add("LoginError[$attempt]: " + $_.Exception.Message)
+    continue
+  }
+
+  $currentDs = $null
+  try {
+    $currentDs = Get-PWCurrentDatasource -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null
+  } catch {
+    $currentDs = $null
+  }
+
+  if ($currentDs) {
+    $loggedIn = $true
+    if ($currentDs.Name) {
+      $effectiveDatasourceName = [string]$currentDs.Name
+    }
+    $loginDebug.Add("LoginOK[$attempt]")
+    break
+  }
+
+  $loginDebug.Add("LoginNoSession[$attempt]")
+}
+
+if (-not $loggedIn) {
+  throw ("New-PWLogin did not establish a ProjectWise session. Attempts: " + ($loginDebug -join ' | '))
+}
+
+$folder = Get-PWFoldersByGUIDs -FolderGUIDs $FolderGuid -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null
+if (-not $folder) {
+  throw "Could not resolve FolderGuid '$FolderGuid' via Get-PWFoldersByGUIDs"
+}
+
+$workspaces = @(Get-PWManagedWorkspaces -IncludeInherited -InputFolders $folder -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null)
+$variables  = @(Get-PWManagedWorkspaceVariables -InputWorkspaces $workspaces -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null)
+
+$pwWorkingDir = ''
+$currentUserCmdlet = @('Get-PWCurrentUser') |
+  Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+  Select-Object -First 1
+
+$userWorkingDirCmdlet = @('Get-PWUserWorkingDirectory') |
+  Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
+  Select-Object -First 1
+
+if ($currentUserCmdlet -and $userWorkingDirCmdlet) {
+  try {
+    $currentUser = & $currentUserCmdlet -ErrorAction Stop
+    $userWorkDir = & $userWorkingDirCmdlet -InputUser $currentUser -ErrorAction Stop
+    if ($userWorkDir -is [string]) {
+      $pwWorkingDir = $userWorkDir
+    } else {
+      if ($null -ne $userWorkDir.WorkingDirectory -and [string]$userWorkDir.WorkingDirectory -ne '') {
+        $pwWorkingDir = [string]$userWorkDir.WorkingDirectory
+      } elseif ($null -ne $userWorkDir.Path -and [string]$userWorkDir.Path -ne '') {
+        $pwWorkingDir = [string]$userWorkDir.Path
+      } elseif ($null -ne $userWorkDir.DirectoryName -and [string]$userWorkDir.DirectoryName -ne '') {
+        $pwWorkingDir = [string]$userWorkDir.DirectoryName
+      } elseif ($null -ne $userWorkDir.FullName -and [string]$userWorkDir.FullName -ne '') {
+        $pwWorkingDir = [string]$userWorkDir.FullName
+      } else {
+        $pwWorkingDir = [string]$userWorkDir
+      }
+    }
   } catch { $pwWorkingDir = '' }
 }
 
-# Fall back to the standard ProjectWise working directory convention:
-#   %LOCALAPPDATA%\Bentley\ProjectWise\<datasource>\working\
 if (-not $pwWorkingDir) {
   $localApp = [Environment]::GetFolderPath('LocalApplicationData')
-  $pwWorkingDir = Join-Path $localApp "Bentley\ProjectWise\$Datasource\working"
+  $pwWorkingDir = Join-Path $localApp "Bentley\ProjectWise\$effectiveDatasourceName\working"
 }
 
-# ── Diagnostic: list available CSB-related cmdlets to stderr ─────────────────
-$availableCsbCmdlets = Get-Command -Module "${moduleName}" |
-  Where-Object { $_.Name -match 'CSB|ConfigBlock|ConfigurationBlock|ManagedWorkspace|WorkspaceProfile' } |
-  Select-Object -ExpandProperty Name
-if ($availableCsbCmdlets) {
-  [Console]::Error.WriteLine("Available CSB cmdlets: " + ($availableCsbCmdlets -join ", "))
-} else {
-  [Console]::Error.WriteLine("No CSB-specific cmdlets found in module ${moduleName}")
-}
-[Console]::Error.WriteLine("Login: $loginCmdlet | WorkingDir: $pwWorkingDir")
-
-# ── If DocumentGuid provided, resolve it to a FolderGuid ─────────────────────
-# Some workflows start from a selected document rather than a folder.
-# pwps_dab exposes Get-PWDocumentsByGuid (or Get-PWDocument) for this.
-if ($DocumentGuid -and -not $FolderGuid) {
-  $docCmdlet = @('Get-PWDocumentsByGuid','Get-PWDocument','Get-PWDocumentByGuid') |
-    Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
-    Select-Object -First 1
-  if ($docCmdlet) {
-    $doc = & $docCmdlet -Guid $DocumentGuid -ErrorAction SilentlyContinue
-    if ($doc) {
-      # FolderGuid is exposed as .FolderGuid, .ProjectGuid, or .ParentGuid depending on version
-      $FolderGuid = $doc.FolderGuid ?? $doc.ProjectGuid ?? $doc.ParentGuid
-      [Console]::Error.WriteLine("Resolved DocumentGuid to FolderGuid: $FolderGuid")
-    }
-  } else {
-    [Console]::Error.WriteLine("No document-lookup cmdlet found; DocumentGuid resolution skipped")
-  }
-}
-
-$csbs = [System.Collections.Generic.List[object]]::new()
-
-# ── Primary: CSBs via Managed Workspace Profile assigned to the Application ──
-# The Application is the correct anchor for the full CSB set (Predefined through
-# WorkSpace levels). pwps_dab provides cmdlets to navigate:
-#   Application → Managed Workspace Profile → CSBs
-# The exact cmdlet names depend on the installed version of pwps_dab.
-if ($ApplicationId) {
-  # Find the Application object by its numeric ID
-  $appCmdlet = @('Get-PWApplications','Get-PWApplication') |
-    Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
-    Select-Object -First 1
-  $app = $null
-  if ($appCmdlet) {
-    $app = & $appCmdlet -ErrorAction SilentlyContinue |
-           Where-Object { $_.Id -eq $ApplicationId -or $_.InstanceId -eq $ApplicationId } |
-           Select-Object -First 1
-  }
-
-  if ($app) {
-    # Navigate Application → Managed Workspace Profile → CSBs
-    # Probe for the profile-retrieval cmdlet (naming varies across module versions)
-    $profileCmdlet = @(
-      'Get-PWManagedWorkspaceProfile',
-      'Get-PWApplicationManagedWorkspaceProfile',
-      'Get-PWWorkspaceProfile'
-    ) | Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
-        Select-Object -First 1
-
-    $csbCmdlet = @(
-      'Get-PWConfigurationBlock',
-      'Get-PWCSB',
-      'Get-PWConfigurationSetBehavior',
-      'Get-PWWorkspaceCSB'
-    ) | Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
-        Select-Object -First 1
-
-    if ($profileCmdlet -and $csbCmdlet) {
-      $profile = & $profileCmdlet -Application $app -ErrorAction SilentlyContinue
-      if ($profile) {
-        $fetched = & $csbCmdlet -ManagedWorkspaceProfile $profile -AllLevels -ErrorAction SilentlyContinue
-        if ($fetched) { $csbs.AddRange(@($fetched)) }
+function Resolve-LevelName {
+  param($raw)
+  if ($null -eq $raw) { return 'Global' }
+  $text = [string]$raw
+  if ([string]::IsNullOrWhiteSpace($text)) { return 'Global' }
+  switch -Regex ($text.ToLowerInvariant()) {
+    'predefined' { return 'Predefined' }
+    'global' { return 'Global' }
+    'application' { return 'Application' }
+    'customer' { return 'Customer' }
+    'site|organization' { return 'Site' }
+    'workspace' { return 'WorkSpace' }
+    'workset|project' { return 'WorkSet' }
+    'discipline' { return 'Discipline' }
+    'role' { return 'Role' }
+    'user' { return 'User' }
+    default {
+      $n = 0
+      if ([int]::TryParse($text, [ref]$n)) {
+        switch ($n) {
+          0 { return 'Predefined' }
+          1 { return 'Global' }
+          2 { return 'Application' }
+          3 { return 'Customer' }
+          4 { return 'Site' }
+          5 { return 'WorkSpace' }
+          6 { return 'WorkSet' }
+          7 { return 'Discipline' }
+          8 { return 'Role' }
+          9 { return 'User' }
+          default { return 'Global' }
+        }
       }
-    } elseif ($csbCmdlet) {
-      # Some versions allow direct Application → CSB retrieval
-      $fetched = & $csbCmdlet -Application $app -AllLevels -ErrorAction SilentlyContinue
-      if ($fetched) { $csbs.AddRange(@($fetched)) }
-    } else {
-      [Console]::Error.WriteLine("Could not find Managed Workspace Profile or CSB retrieval cmdlet in ${moduleName}")
+      return 'Global'
     }
-  } else {
-    [Console]::Error.WriteLine("Application ID '$ApplicationId' not found via $appCmdlet")
   }
 }
 
-# ── Secondary: folder-assigned CSBs (WorkSet / Discipline level) ──────────────
-# CSBs can be assigned directly to a PW folder (Work Area) in PW Administrator.
-# These are typically WorkSet and Discipline level blocks.
-if ($FolderGuid) {
-  # Probe for folder-lookup cmdlet (naming varies)
-  $folderCmdlet = @('Get-PWFoldersByGuids','Get-PWFolderByGuid','Get-PWFolder') |
-    Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
-    Select-Object -First 1
-
-  $csbCmdlet = @(
-    'Get-PWConfigurationBlock',
-    'Get-PWCSB',
-    'Get-PWConfigurationSetBehavior',
-    'Get-PWWorkspaceCSB'
-  ) | Where-Object { Get-Command $_ -Module "${moduleName}" -ErrorAction SilentlyContinue } |
-      Select-Object -First 1
-
-  $folder = $null
-  if ($folderCmdlet) {
-    $folder = & $folderCmdlet -Guid $FolderGuid -ErrorAction SilentlyContinue
-    if (-not $folder) {
-      $folder = & $folderCmdlet -ErrorAction SilentlyContinue |
-                Where-Object { $_.Guid -eq $FolderGuid -or $_.InstanceId -eq $FolderGuid } |
-                Select-Object -First 1
+function Get-FirstValue {
+  param($obj, [string[]]$names)
+  foreach ($n in $names) {
+    $val = $obj.$n
+    if ($null -eq $val) { continue }
+    if ($val -is [string]) {
+      if ($val -ne '') { return $val }
+      continue
     }
+    if ($val -is [System.Collections.IEnumerable] -and -not ($val -is [string])) {
+      if (@($val).Count -gt 0) { return $val }
+      continue
+    }
+    return $val
   }
+  return $null
+}
 
-  if ($folder -and $csbCmdlet) {
-    # Try Project/Folder parameter variants used by different pwps_dab versions
-    $fetched = & $csbCmdlet -Project $folder -ErrorAction SilentlyContinue
-    if (-not $fetched) {
-      $fetched = & $csbCmdlet -Folder $folder -ErrorAction SilentlyContinue
-    }
-    if (-not $fetched) {
-      $fetched = & $csbCmdlet -WorkArea $folder -ErrorAction SilentlyContinue
-    }
-    if ($fetched) { $csbs.AddRange(@($fetched)) }
-  } elseif (-not $folder) {
-    [Console]::Error.WriteLine("Could not resolve FolderGuid '$FolderGuid' to a folder object")
+function Parse-OpType {
+  param([string]$raw)
+  $s = [string]$raw
+  if ($null -eq $raw) { $s = '' }
+  $s = $s.ToLowerInvariant()
+  switch ($s) {
+    'assignment' { return '=' }
+    'append'     { return '>' }
+    'prepend'    { return '<' }
+    'directive'  { return ':' }
+    default      { return '=' }
   }
 }
 
-# ── Serialise CSBs to JSON ────────────────────────────────────────────────────
-# Each CSB exposes:
-#   .Id / .CsbId     — numeric database ID
-#   .Name            — display name
-#   .Description     — optional description
-#   .Level           — CsbLevel enum or integer (0-9) or string
-#   .Variables       — collection of CsbVariable objects
-#
-# Each Variable exposes:
-#   .Name            — CFG variable name
-#   .Operator        — string "=" | ">" | "<" | ":"
-#   .Value           — raw value string (may be PW logical path for PWFolder type)
-#   .ValueType       — enum/string: Literal | PWFolder | dms_project | LastDirPiece
-#   .IsLocked / .Locked — boolean; if true, emit %lock directive after assignment
-#
-$levelNames = @('Predefined','Global','Application','Customer','Site','WorkSpace','WorkSet','Discipline','Role','User')
+function Parse-ValueType {
+  param([string]$raw)
+  $s = [string]$raw
+  if ($null -eq $raw) { $s = '' }
+  $s = $s.ToLowerInvariant()
+  switch ($s) {
+    'string'        { return 'Literal' }
+    'literal'       { return 'Literal' }
+    'project'       { return 'PWFolder' }
+    'folder'        { return 'PWFolder' }
+    'pwfolder'      { return 'PWFolder' }
+    'dms_project'   { return 'dms_project' }
+    'lastdirpiece'  { return 'LastDirPiece' }
+    default         { return 'Literal' }
+  }
+}
+
+function Extract-ValueFromValuesText {
+  param([string]$text)
+  if ([string]::IsNullOrWhiteSpace($text)) { return '' }
+
+  $t = [string]$text
+  # Remove control characters (0x00-0x1F and 0x7F) using explicit replacement
+  for ($i = 0; $i -le 31; $i++) { $t = $t -replace [char]$i, ' ' }
+  $t = $t -replace [char]127, ' '
+  $t = ($t -replace '\s+', ' ').Trim()
+  if ([string]::IsNullOrWhiteSpace($t)) { return '' }
+
+  # Prefer explicit "Value: ..." when present
+  $m = [regex]::Match($t, '(?i)\bValue\s*:\s*(.+)$')
+  if ($m.Success) {
+    return ([string]$m.Groups[1].Value).Trim()
+  }
+
+  # Otherwise parse everything after "Value Type:" and drop only the type token.
+  $m = [regex]::Match($t, '(?i)Value\s*Type\s*:\s*')
+  if (-not $m.Success) { return '' }
+  $tail = $t.Substring($m.Index + $m.Length).Trim()
+  if ([string]::IsNullOrWhiteSpace($tail)) { return '' }
+
+  $typeToken = [regex]::Match($tail, '^[^\s]+')
+  if ($typeToken.Success) {
+    $tail = $tail.Substring($typeToken.Length).Trim()
+  }
+  return $tail
+}
+
+function Parse-ValuesPayload {
+  # $valuesStr pre-extracted in the main loop using Get-FirstValue/Out-String (confirmed working there).
+  param($v, [string]$valuesStr)
+  $vn = (($valuesStr -replace '[\r\n]+', ' ') -replace '\s+', ' ').Trim()
+  $vn = [regex]::Replace($vn, "\x1B\[[0-9;?]*[ -/]*[@-~]", '')
+  # Remove control characters (0-31 and 127) using explicit character-by-character replacement
+  # (PowerShell .NET regex character classes do not support hex escape syntax)
+  for ($i = 0; $i -le 31; $i++) { $vn = $vn -replace [char]$i, ' ' }
+  $vn = $vn -replace [char]127, ' '
+  $vn = ($vn -replace '\s+', ' ').Trim()
+
+  # Direct property shortcuts (populated by some PW module versions)
+  $op = '';   try { $op   = [string]$v.Operator  } catch {}
+  $type = ''; try { $type = [string]$v.ValueType  } catch {}
+  $val = '';  try { $val  = [string]$v.Value       } catch {}
+  # Remove control characters from direct Value field as well
+  for ($i = 0; $i -le 31; $i++) { $val = $val -replace [char]$i, ' ' }
+  $val = $val -replace [char]127, ' '
+  $val = $val.Trim()
+
+  # Parse Op Type from Values string
+  if (-not $op -and $vn -match '(?i)Op\s*Type\s*:\s*([^\s]+)') {
+    $op = (($matches[1] -replace '[^A-Za-z_]', '')).Trim()
+  }
+
+  # Parse Value Type from Values string
+  if (-not $type -and $vn -match '(?i)Value\s*Type\s*:\s*([^\s]+)') {
+    $type = (($matches[1] -replace '[^A-Za-z_]', '')).Trim()
+  }
+
+  # Parse value from Values string
+  if ([string]::IsNullOrWhiteSpace([string]$val)) {
+    # "Value:  <payload>" form (note double/single space after colon)
+    if ($vn -match '(?i)\bValue\s*:\s*(.+)$') { $val = $matches[1].Trim() }
+    # "Value Type: <type> <payload>" form (no "Value:" label; value follows type directly)
+    elseif ($vn -match '(?i)Value\s*Type\s*:\s*[^\s]+\s+(.+)$') { $val = $matches[1].Trim() }
+  }
+
+  # Deterministic fallback: split after "Value Type:" and drop only the first token (the type),
+  # preserving the full payload even when separators/tokens contain odd bytes.
+  if ([string]::IsNullOrWhiteSpace([string]$val) -and $vn -match '(?i)Value\s*Type\s*:') {
+    $afterType = [regex]::Replace($vn, '(?i)^.*?Value\s*Type\s*:\s*', '')
+    if ($afterType) {
+      $parts = $afterType -split '\s+', 2
+      if ($parts.Count -ge 2) {
+        $val = [string]$parts[1]
+      }
+    }
+  }
+
+  # Extra safety for pwps_dab payload style:
+  #   One value Op Type: ASSIGNMENT Value Type: Project _Global Data/Bentley 2024
+  if ([string]::IsNullOrWhiteSpace([string]$val) -and $vn -match '(?i)Value\s*Type\s*:\s*Project\s+(.+)$') {
+    $val = [string]$matches[1]
+  }
+
+  # Marker-index fallback (more robust than regex groups when tokenization contains odd bytes)
+  if ([string]::IsNullOrWhiteSpace([string]$val) -and $type -match '(?i)^project$') {
+    $m = [regex]::Match($vn, '(?i)Value\s*Type\s*:\s*Project')
+    if ($m.Success) {
+      $tail = $vn.Substring($m.Index + $m.Length).Trim()
+      if ($tail) { $val = $tail }
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$val) -and $type -match '(?i)^string$') {
+    $m = [regex]::Match($vn, '(?i)Value\s*Type\s*:\s*String')
+    if ($m.Success) {
+      $tail = $vn.Substring($m.Index + $m.Length).Trim()
+      if ($tail) { $val = $tail }
+    }
+  }
+
+  # Final fallback: robust extraction from Values text regardless of token corruption
+  if ([string]::IsNullOrWhiteSpace([string]$val)) {
+    $val = Extract-ValueFromValuesText $vn
+  }
+
+  # Type keyword fallback
+  if (-not $type) {
+    if ($vn -match '(?i)project') { $type = 'project' }
+    elseif ($vn -match '(?i)string') { $type = 'string' }
+  }
+
+  $locked = $false
+  try {
+    $lockedRaw = $v.Locked
+    if ($null -ne $lockedRaw) {
+      if ($lockedRaw -is [int]) { $locked = ([int]$lockedRaw -ne 0) }
+      else { $locked = [bool]$lockedRaw }
+    }
+  } catch { $locked = $false }
+
+  return @{
+    Operator  = Parse-OpType $op
+    ValueType = Parse-ValueType $type
+    Value     = $val.Trim()
+    Locked    = $locked
+    _Vn       = $vn
+    _Vx       = (Extract-ValueFromValuesText $vn)
+  }
+}
 
 $result = [System.Collections.Generic.List[object]]::new()
-$seenIds = [System.Collections.Generic.HashSet[int]]::new()
+$blocks = @{}
+$autoId = 1
 
-foreach ($csb in $csbs) {
-  $csbId = [int]($csb.Id ?? $csb.CsbId ?? 0)
-  if (-not $seenIds.Add($csbId)) { continue }  # deduplicate
+foreach ($v in $variables) {
+  $name = [string](Get-FirstValue $v @('Name','VariableName'))
+  if (-not $name) { continue }
 
-  # Level: handle integer index, enum .Value, or string
-  $rawLevel = $csb.Level
-  $levelStr = if ($rawLevel -is [int]) {
-    if ($rawLevel -ge 0 -and $rawLevel -lt $levelNames.Count) { $levelNames[$rawLevel] } else { 'Global' }
-  } elseif ($rawLevel -ne $null) {
-    $s = $rawLevel.ToString()
-    # If the enum ToString() produces an integer string, map it
-    $parsed = 0
-    if ([int]::TryParse($s, [ref]$parsed)) {
-      if ($parsed -ge 0 -and $parsed -lt $levelNames.Count) { $levelNames[$parsed] } else { 'Global' }
-    } else { $s }
-  } else { 'Global' }
-
-  $vars = [System.Collections.Generic.List[object]]::new()
-  $variableCollection = $csb.Variables ?? $csb.VariableSet ?? @()
-  foreach ($v in $variableCollection) {
-    $vtRaw = $v.ValueType
-    $vtStr = if ($vtRaw -ne $null) { $vtRaw.ToString() } else { 'Literal' }
-
-    # .IsLocked and .Locked are both used across pwps_dab versions
-    $isLocked = [bool]($v.IsLocked ?? $v.Locked ?? $false)
-
-    $vars.Add(@{
-      Name      = [string]($v.Name ?? '')
-      Operator  = [string]($v.Operator ?? '=')
-      Value     = [string]($v.Value ?? '')
-      ValueType = $vtStr
-      Locked    = $isLocked
-    })
+  if ($name -match '^(?i)_DYNAMIC_DATASOURCE_BENTLEYROOT$') {
+    $rawType = [string](Get-FirstValue $v @('ValueType','VariableValueType'))
+    $rawValue = [string](Get-FirstValue $v @('Value','VariableValue'))
+    $rawValuesField = ''
+    try {
+      $rawValuesField = ((Get-FirstValue $v @('Values','ValueSummary') | Out-String).Trim())
+    } catch {
+      $rawValuesField = ''
+    }
+    $loginDebug.Add("TrackedRaw[$name]: Type='$rawType' Value='$rawValue' Values='$rawValuesField'")
   }
 
-  $result.Add(@{
-    Id          = $csbId
-    Name        = [string]($csb.Name ?? '')
-    Description = [string]($csb.Description ?? '')
-    Level       = $levelStr
-    Variables   = $vars.ToArray()
-    LinkedIds   = @()   # CSB linking is not exposed via pwps_dab property; handled by ordering
+  $cbIdRaw = Get-FirstValue $v @('ConfigurationBlockID','ConfigurationBlockId','ConfigBlockId','CSBId')
+  $cbId = 0
+  if ($null -ne $cbIdRaw) {
+    [void][int]::TryParse([string]$cbIdRaw, [ref]$cbId)
+  }
+  if ($cbId -le 0) {
+    $cbId = $autoId
+    $autoId++
+  }
+
+  $cbName = [string](Get-FirstValue $v @('ConfigurationBlockName','ConfigBlockName','ManagedWorkspaceName','WorkspaceName'))
+  if (-not $cbName) { $cbName = "CSB-$cbId" }
+  $cbDesc = [string](Get-FirstValue $v @('ConfigurationBlockDescription','Description'))
+  $cbLevel = Resolve-LevelName (Get-FirstValue $v @('ConfigurationBlockLevel','ConfigBlockLevel','Level','ManagedWorkspaceLevel','WorkspaceLevel'))
+
+  $key = "$cbId"
+  if (-not $blocks.ContainsKey($key)) {
+    $blocks[$key] = [PSCustomObject]@{
+      Id = $cbId
+      Name = $cbName
+      Description = $cbDesc
+      Level = $cbLevel
+      Variables = [System.Collections.Generic.List[object]]::new()
+    }
+  }
+
+  $valuesStr = ''
+  try { $valuesStr = (Get-FirstValue $v @('Values','ValueSummary') | Out-String).Trim() } catch {}
+  $parsed = Parse-ValuesPayload $v $valuesStr
+  $folderCode = ''
+  if ($parsed.ValueType -eq 'PWFolder' -and -not [string]::IsNullOrWhiteSpace([string]$parsed.Value)) {
+    try {
+      $folderPath = ([string]$parsed.Value).Trim() -replace '/', '\\'
+      if ($folderPath -notmatch '\\$') { $folderPath += '\\' }
+      $folderObj = Get-PWFolders -FolderPath $folderPath -JustOne -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null
+      if ($folderObj -and $folderObj.Code) {
+        $folderCode = [string]$folderObj.Code
+      }
+    } catch {
+      $folderCode = ''
+    }
+  }
+  if ($name -match '^(?i)_DYNAMIC_DATASOURCE_BENTLEYROOT$') {
+    $loginDebug.Add("TrackedParsed[$name]: Type='$($parsed.ValueType)' Value='$($parsed.Value)' Op='$($parsed.Operator)' Code='$folderCode' Vn='$($parsed._Vn)' Vx='$($parsed._Vx)'")
+  }
+  $operator = $parsed.Operator
+  if ($name -match '^(?i)include$' -and $operator -eq '=') {
+    $operator = ':'
+  }
+  $blocks[$key].Variables.Add(@{
+    Name      = $name
+    Operator  = $operator
+    Value     = $parsed.Value
+    ValueType = $parsed.ValueType
+    FolderCode = $folderCode
+    ValuesRaw = $valuesStr
+    Locked    = $parsed.Locked
   })
 }
 
-# Output a wrapper object so the TypeScript caller can read both the CSBs and the
-# PW working directory in one JSON parse. The WorkingDir is used to seed PW_WORKDIR
-# in the master .tmp, which is the actual local working directory ProjectWise uses
-# for checked-out files (not a temp directory).
+foreach ($key in $blocks.Keys | Sort-Object {[int]$_}) {
+  $b = $blocks[$key]
+  $result.Add(@{
+    Id          = $b.Id
+    Name        = $b.Name
+    Description = $b.Description
+    Level       = $b.Level
+    Variables   = @($b.Variables)
+    LinkedIds   = @()
+  })
+}
+
+if ($result.Count -eq 0 -and $workspaces.Count -gt 0) {
+  foreach ($ws in $workspaces) {
+    $wsIdRaw = Get-FirstValue $ws @('Id','ManagedWorkspaceId','WorkspaceId','ConfigBlockId','CSBId')
+    $wsId = 0
+    if ($null -ne $wsIdRaw) { [void][int]::TryParse([string]$wsIdRaw, [ref]$wsId) }
+    if ($wsId -le 0) { $wsId = $autoId; $autoId++ }
+    $wsName = [string](Get-FirstValue $ws @('Name','ManagedWorkspaceName','WorkspaceName','DisplayName'))
+    if (-not $wsName) { $wsName = "ManagedWorkspace-$wsId" }
+    $wsDesc = [string](Get-FirstValue $ws @('Description','ManagedWorkspaceDescription'))
+    $wsLevel = Resolve-LevelName (Get-FirstValue $ws @('Level','ManagedWorkspaceLevel','WorkspaceLevel','Type','Scope'))
+    $result.Add(@{
+      Id          = $wsId
+      Name        = $wsName
+      Description = $wsDesc
+      Level       = $wsLevel
+      Variables   = @()
+      LinkedIds   = @()
+    })
+  }
+}
+
 @{
   WorkingDir = $pwWorkingDir
   Csbs       = @($result)
+  Debug      = @(
+    "Module=${moduleName}",
+    "ServerPart=$ServerPart",
+    "DatasourceName=$DatasourceName",
+    "DatasourceQualified=$datasourceQualified",
+    "Login=$($loginDebug -join ' | ')",
+    "FolderGuid=$FolderGuid",
+    "Workspaces=$($workspaces.Count)",
+    "Variables=$($variables.Count)",
+    "Csbs=$($result.Count)",
+    "WorkspaceNames=$((@($workspaces | Select-Object -ExpandProperty Name) -join '; '))",
+    "CsbNames=$((@($result | ForEach-Object { $_.Name }) -join '; '))"
+  )
 } | ConvertTo-Json -Depth 10
 `;
 
   const tempScript = path.join(os.tmpdir(), `pw-csb-mod-${Date.now()}.ps1`);
   fs.writeFileSync(tempScript, script, 'utf8');
 
+  let out = '';
+  let err = '';
+  let status: number | null = null;
   try {
-    const serverHostname = (() => { try { return new URL(conn.wsgUrl).hostname; } catch { return conn.wsgUrl; } })();
+    const serverHostname = (() => {
+      const rawHost = (() => {
+        try { return new URL(conn.wsgUrl).hostname; }
+        catch { return conn.wsgUrl; }
+      })();
+      // ProjectWise login expects server part without the WSG host suffix "-ws"
+      // e.g. sncl-uk-pw-ws.bentley.com -> sncl-uk-pw.bentley.com
+      return rawHost.replace(/-ws(?=\.|$)/i, '');
+    })();
     const result = spawnSync('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-File', tempScript,
-      '-Server', serverHostname,
-      '-Datasource', conn.datasource,
-      '-Username', conn.username,
-      '-Password', conn.credential,
-      ...(ctx.applicationInstanceId ? ['-ApplicationId', ctx.applicationInstanceId] : []),
-      ...(ctx.folderGuid            ? ['-FolderGuid',     ctx.folderGuid]            : []),
-      ...(ctx.documentGuid          ? ['-DocumentGuid',   ctx.documentGuid]           : []),
-    ], { timeout: 45000, maxBuffer: 10 * 1024 * 1024 });
+      '-ServerPart', serverHostname,
+      '-DatasourceName', conn.datasource,
+      '-FolderGuid', ctx.folderGuid,
+    ], { timeout: 180000, maxBuffer: 20 * 1024 * 1024 });
 
-    const out  = result.stdout?.toString() ?? '';
-    const err  = result.stderr?.toString() ?? '';
+    status = result.status;
+    out = result.stdout?.toString() ?? '';
+    err = result.stderr?.toString() ?? '';
+    if (result.error) {
+      throw new Error(`PowerShell process error: ${result.error.message}`);
+    }
+    if (result.signal) {
+      throw new Error(`PowerShell process terminated by signal: ${result.signal}`);
+    }
+    if (status !== 0 && !err.trim() && !out.trim()) {
+      throw new Error(`PowerShell module script exited with code ${status} and produced no output.`);
+    }
     if (err.trim()) {
       // stderr carries diagnostic messages written by the script (not fatal errors)
       // Surface them to the caller via a thrown error only if stdout is also empty.
@@ -818,6 +1348,32 @@ foreach ($csb in $csbs) {
       throw new Error(err || 'No output from PowerShell module script');
     }
     return parsePowerShellCsbJson(out);
+  } catch (e: any) {
+    let debugScriptPath = '';
+    let debugStdoutPath = '';
+    let debugStderrPath = '';
+    try {
+      const debugDir = path.join(os.tmpdir(), 'bentley-cfg-debug');
+      fs.mkdirSync(debugDir, { recursive: true });
+      const stamp = Date.now();
+      debugScriptPath = path.join(debugDir, `pw-csb-mod-${stamp}.ps1`);
+      debugStdoutPath = path.join(debugDir, `pw-csb-mod-${stamp}.stdout.log`);
+      debugStderrPath = path.join(debugDir, `pw-csb-mod-${stamp}.stderr.log`);
+      fs.copyFileSync(tempScript, debugScriptPath);
+      fs.writeFileSync(debugStdoutPath, out, 'utf8');
+      fs.writeFileSync(debugStderrPath, err, 'utf8');
+    } catch {
+      // ignore debug persistence failures; preserve original error
+    }
+
+    const base = e instanceof Error ? e.message : String(e);
+    const meta = [
+      status !== null ? `PowerShell exit code: ${status}` : '',
+      debugScriptPath ? `Debug script: ${debugScriptPath}` : '',
+      debugStdoutPath ? `Debug stdout: ${debugStdoutPath}` : '',
+      debugStderrPath ? `Debug stderr: ${debugStderrPath}` : '',
+    ].filter(Boolean).join('\n');
+    throw new Error(meta ? `${base}\n${meta}` : base);
   } finally {
     try { fs.unlinkSync(tempScript); } catch { /* ignore */ }
   }
@@ -1153,16 +1709,26 @@ async function readCsbsViaWsg(client: ProjectWiseClient, ctx: ManagedWorkspaceCo
  */
 async function downloadPwFolderToDms(
   client: ProjectWiseClient,
+  conn: PwConnection,
+  pwFolderMetaByPath: Map<string, PwFolderModuleMetadata>,
   pwLogicalPath: string,
   workDir: string,
   dmsPathMap: DmsPathMap,
-  messages: CsbExtractionResult['messages']
+  messages: CsbExtractionResult['messages'],
+  cfgNameLike?: string,
+  knownFolder?: PwFolder
 ): Promise<string | null> {
   try {
-    const projects = await client.listProjects();
-    const matchedFolder = await findFolderByPath(client, pwLogicalPath, projects);
+    const matchedFolder = (() => {
+      if (knownFolder) return Promise.resolve(knownFolder);
+      return (async () => {
+        const projects = await client.listProjects();
+        return findFolderByPath(client, pwLogicalPath, projects);
+      })();
+    })();
+    let folder = await matchedFolder;
 
-    if (!matchedFolder) {
+    if (!folder) {
       messages.push({
         level: 'warning',
         text: `Could not locate PW folder "${pwLogicalPath}" in repository.`,
@@ -1170,22 +1736,100 @@ async function downloadPwFolderToDms(
       return null;
     }
 
-    // Assign a sequential dms index based on entries already in the map
+    const cachedMeta = pwFolderMetaByPath.get(normalisePwLogicalPathKey(pwLogicalPath));
+    if (cachedMeta) {
+      folder = {
+        ...folder,
+        code: folder.code || cachedMeta.code,
+        projectId: folder.projectId || cachedMeta.projectId,
+      };
+    }
+
+    if ((!folder.code || !folder.projectId) && folder.instanceId) {
+      const refreshed = await client.getProjectByGuid(folder.instanceId);
+      if (refreshed) {
+        folder = { ...folder, ...refreshed };
+      }
+    }
+
+    if (!folder.code && !folder.projectId) {
+      const resolvedMeta = (await resolvePwFolderMetadataViaPwModule(conn, [pwLogicalPath])).get(normalisePwLogicalPathKey(pwLogicalPath));
+      if (resolvedMeta) {
+        pwFolderMetaByPath.set(normalisePwLogicalPathKey(pwLogicalPath), resolvedMeta);
+        messages.push({
+          level: 'info',
+          text: `PWFolder on-demand metadata: path="${pwLogicalPath}" code="${resolvedMeta.code ?? ''}" projectId="${resolvedMeta.projectId ?? ''}" lookup="${resolvedMeta.lookupUsed ?? ''}"`,
+        });
+        folder = {
+          ...folder,
+          code: folder.code || resolvedMeta.code,
+          projectId: folder.projectId || resolvedMeta.projectId,
+        };
+      }
+    }
+
+    const existing = dmsPathMap[folder.instanceId];
+    if (existing) {
+      return existing.dmsDir;
+    }
+
+    const folderCode = (folder.code ?? '').trim();
+    const folderProjectId = folder.projectId;
+    const preferredDmsDirName = /^dms\d+$/i.test(folderCode)
+      ? folderCode.toLowerCase()
+      : (typeof folderProjectId === 'number' && Number.isFinite(folderProjectId) && folderProjectId > 0
+        ? `dms${folderProjectId}`
+        : '');
+
+    // Fallback if Code isn't available (or doesn't match dms#### pattern)
     const dmsIndex = Object.keys(dmsPathMap).length;
-    const dmsDirName = `dms${String(dmsIndex).padStart(5, '0')}`;
+    let dmsDirName = preferredDmsDirName || `dms${String(dmsIndex).padStart(5, '0')}`;
+
+    // Avoid collisions with an existing different PW folder mapping
+    const collides = Object.values(dmsPathMap).some(entry =>
+      path.basename(entry.dmsDir).toLowerCase() === dmsDirName.toLowerCase() &&
+      entry.pwLogicalPath.toLowerCase() !== pwLogicalPath.toLowerCase()
+    );
+    if (collides) {
+      dmsDirName = `dms${String(dmsIndex).padStart(5, '0')}`;
+    }
+
     const dmsDir = path.join(workDir, dmsDirName);
     fs.mkdirSync(dmsDir, { recursive: true });
 
-    dmsPathMap[matchedFolder.instanceId] = {
+    dmsPathMap[folder.instanceId] = {
       dmsDir,
       pwLogicalPath,
-      folderName: matchedFolder.name,
+      folderName: folder.name,
     };
 
-    const cfgFiles = await client.fetchAllCfgFiles(matchedFolder.instanceId);
+    let cfgFiles: Array<{ pwPath: string; content: string }> = [];
+    if (cfgNameLike) {
+      try {
+        cfgFiles = await client.fetchCfgFilesByNameLike(folder.instanceId, cfgNameLike);
+        messages.push({
+          level: 'info',
+          text: `WSG filtered fetch Project/${folder.instanceId}/Document (like '${cfgNameLike}') returned ${cfgFiles.length} file(s).`,
+        });
+      } catch {
+        cfgFiles = [];
+      }
+    }
+
+    if (cfgFiles.length === 0) {
+      const docs = await client.listDocuments(folder.instanceId);
+      for (const doc of docs.filter(d => /\.(cfg|ucf|pcf)$/i.test(d.fileName))) {
+        try {
+          const content = await client.downloadDocumentContent(doc.instanceId);
+          cfgFiles.push({ pwPath: `/${doc.fileName}`, content });
+        } catch {
+          // skip undownloadable file
+        }
+      }
+    }
+
     for (const { pwPath, content } of cfgFiles) {
-      const relPath = pwPath.replace(/^[/\\]+/, '');
-      const localPath = path.join(dmsDir, ...relPath.split(/[/\\]/));
+      const localPath = path.join(dmsDir, path.basename(pwPath));
       fs.mkdirSync(path.dirname(localPath), { recursive: true });
       fs.writeFileSync(localPath, content, 'utf8');
     }
@@ -1207,6 +1851,8 @@ async function downloadPwFolderToDms(
  */
 async function downloadAdditionalPwFolders(
   client: ProjectWiseClient,
+  conn: PwConnection,
+  pwFolderMetaByPath: Map<string, PwFolderModuleMetadata>,
   csbs: CsbBlock[],
   workDir: string,
   dmsPathMap: DmsPathMap,
@@ -1220,7 +1866,7 @@ async function downloadAdditionalPwFolders(
         const normalised = v.value.toLowerCase();
         if (!seenPaths.has(normalised)) {
           seenPaths.add(normalised);
-          await downloadPwFolderToDms(client, v.value, workDir, dmsPathMap, messages);
+          await downloadPwFolderToDms(client, conn, pwFolderMetaByPath, v.value, workDir, dmsPathMap, messages);
         }
       }
     }
@@ -1283,55 +1929,91 @@ async function findFolderByPath(
  */
 async function resolveAtPathsRecursively(
   client: ProjectWiseClient,
+  conn: PwConnection,
+  pwFolderMetaByPath: Map<string, PwFolderModuleMetadata>,
   csbs: CsbBlock[],
   workDir: string,
   dmsPathMap: DmsPathMap,
   messages: CsbExtractionResult['messages']
 ): Promise<void> {
-  const seenPaths = new Set(
+  const seenPwFolders = new Set(
     Object.values(dmsPathMap).map(e => normaliseAtPath(e.pwLogicalPath))
   );
 
-  // Collect @: paths from Literal CSB variable values
-  const pending: string[] = [];
+  const variableContext = buildIncludeVariableContext(csbs);
+  const pending: Array<{ pwFolderPath: string; cfgNameLike?: string }> = [];
+
+  const enqueue = (pwFolderPath: string, cfgNameLike?: string): void => {
+    const key = normaliseAtPath(pwFolderPath);
+    if (!seenPwFolders.has(key)) {
+      seenPwFolders.add(key);
+      pending.push({ pwFolderPath, cfgNameLike });
+    }
+  };
+
+  // Seed queue from CSB PWFolder variables and include directives.
   for (const csb of csbs) {
     for (const v of csb.variables) {
-      if (v.value && isAtPath(v.value)) {
-        const n = normaliseAtPath(v.value);
-        if (!seenPaths.has(n)) { seenPaths.add(n); pending.push(v.value); }
+      if (v.valueType === 'PWFolder' && v.value) {
+        enqueue(v.value);
+      }
+      if (/^include$/i.test(v.name) && v.value) {
+        const expanded = expandIncludeExpression(v.value, variableContext);
+        const target = includeToPwFolderTarget(expanded);
+        if (target) enqueue(target.folderPath, target.cfgNameLike);
+      }
+      if (isAtPath(v.value)) {
+        enqueue(v.value);
       }
     }
   }
 
-  // BFS: download folders, scan their CFG files for further @: includes
+  // BFS: download queued PW folders and recursively scan all local cfg/ucf/pcf
+  // for further %include directives.
   let batch = [...pending];
   let pass = 0;
-  while (batch.length > 0 && pass < 10) { // safety limit
+  while (batch.length > 0 && pass < 20) {
     pass++;
-    const nextBatch: string[] = [];
-    for (const pwPath of batch) {
-      const dmsDir = await downloadPwFolderToDms(client, pwPath, workDir, dmsPathMap, messages);
+    const nextBatch: Array<{ pwFolderPath: string; cfgNameLike?: string }> = [];
+
+    for (const item of batch) {
+      const dmsDir = await downloadPwFolderToDms(
+        client,
+        conn,
+        pwFolderMetaByPath,
+        item.pwFolderPath,
+        workDir,
+        dmsPathMap,
+        messages,
+        item.cfgNameLike
+      );
       if (!dmsDir) continue;
 
-      // Scan all downloaded CFG files for further @: %include paths
-      for (const file of walkLocalDir(dmsDir)) {
+      for (const file of walkLocalDir(workDir)) {
         if (!/\.(cfg|ucf|pcf)$/i.test(file)) continue;
         try {
           const content = fs.readFileSync(file, 'utf8');
-          for (const atPath of extractAtPathsFromCfg(content)) {
-            const n = normaliseAtPath(atPath);
-            if (!seenPaths.has(n)) {
-              seenPaths.add(n);
-              nextBatch.push(atPath);
+          for (const includeExpr of extractIncludeExpressions(content)) {
+            const expanded = expandIncludeExpression(includeExpr, variableContext);
+            const target = includeToPwFolderTarget(expanded);
+            if (!target) continue;
+            const key = normaliseAtPath(target.folderPath);
+            if (!seenPwFolders.has(key)) {
+              seenPwFolders.add(key);
+              nextBatch.push({ pwFolderPath: target.folderPath, cfgNameLike: target.cfgNameLike });
             }
           }
-        } catch { /* unreadable file — skip */ }
+        } catch {
+          // ignore unreadable file and continue recursion
+        }
       }
     }
+
     batch = nextBatch;
   }
-  if (pass >= 10) {
-    messages.push({ level: 'warning', text: 'Stopped @: path resolution after 10 passes (possible cycle).' });
+
+  if (pass >= 20) {
+    messages.push({ level: 'warning', text: 'Stopped %include recursion after 20 passes (possible cycle).' });
   }
 }
 
@@ -1349,22 +2031,85 @@ function normaliseAtPath(p: string): string {
  * Scan CFG file content for %include lines that reference @: paths.
  * Returns all unique @: folder paths found.
  */
-function extractAtPathsFromCfg(content: string): string[] {
-  const paths: string[] = [];
+function extractIncludeExpressions(content: string): string[] {
+  const expressions: string[] = [];
   for (const line of content.split(/\r?\n/)) {
     const stripped = line.replace(/#.*$/, '').trim();
-    // %include @:\Some\Path\ or %include @:\Some\Path\*.cfg
-    const m = stripped.match(/^%include\s+(@:[/\\][^*?\s]*)/i);
+    const m = stripped.match(/^%include\s+(.*?)(?:\s+level\s+\w+)?\s*$/i);
     if (m) {
-      // Reduce to the folder part (strip filename/wildcard at end)
-      const raw = m[1];
-      const folder = raw.includes('*') || raw.includes('?')
-        ? raw.replace(/[/\\][^/\\]*$/, '') // strip last segment (filename/glob)
-        : raw;
-      if (folder) paths.push(folder);
+      const expr = m[1].trim();
+      if (expr) expressions.push(expr);
     }
   }
-  return [...new Set(paths)];
+  return [...new Set(expressions)];
+}
+
+function buildIncludeVariableContext(csbs: CsbBlock[]): Map<string, string> {
+  const context = new Map<string, string>();
+  for (const csb of csbs) {
+    for (const v of csb.variables) {
+      if (!v.name) continue;
+      let value = v.value ?? '';
+      if (v.valueType === 'PWFolder' && value && !/[\\/]$/.test(value)) {
+        value = `${value}/`;
+      }
+
+      const existing = context.get(v.name);
+      if (v.operator === '=') context.set(v.name, value);
+      else if (v.operator === ':') {
+        if (!existing) context.set(v.name, value);
+      } else if (v.operator === '>') {
+        context.set(v.name, existing ? `${existing};${value}` : value);
+      } else if (v.operator === '<') {
+        context.set(v.name, existing ? `${value};${existing}` : value);
+      }
+    }
+  }
+  return context;
+}
+
+function expandIncludeExpression(expr: string, context: Map<string, string>): string {
+  let out = expr;
+  let iterations = 0;
+  while (iterations < 10) {
+    const next = out
+      .replace(/\$\(([A-Za-z_][A-Za-z0-9_]*)\)/g, (m, n) => context.get(n) ?? m)
+      .replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, n) => context.get(n) ?? m);
+    if (next === out) break;
+    out = next;
+    iterations++;
+  }
+  return out;
+}
+
+function includeToPwFolderTarget(includePath: string): { folderPath: string; cfgNameLike?: string } | null {
+  if (!includePath) return null;
+  let candidate = includePath.trim().replace(/^['"]|['"]$/g, '');
+  if (!candidate || /\$\(|\$\{/.test(candidate)) return null;
+
+  const normal = candidate.replace(/\\/g, '/');
+  const isWindowsAbs = /^[A-Za-z]:\//.test(normal);
+  const isUnixAbs = normal.startsWith('/');
+  const isRelativeLocal = normal.startsWith('./') || normal.startsWith('../');
+  if (isWindowsAbs || isUnixAbs || isRelativeLocal) return null;
+
+  // Treat as PW logical include path.
+  // If include targets a specific cfg/wildcard, keep that name pattern for WSG filtering.
+  let cfgNameLike: string | undefined;
+  const lastSegMatch = candidate.match(/[^/\\]+$/);
+  const lastSeg = lastSegMatch?.[0] ?? '';
+  if (lastSeg && (/[*?]/.test(lastSeg) || /\.(cfg|ucf|pcf)$/i.test(lastSeg))) {
+    cfgNameLike = lastSeg.replace(/\?/g, '_').replace(/\*/g, '%');
+  }
+
+  // Reduce to folder path.
+  let folder = candidate;
+  if (/[*?]/.test(folder) || /\.(cfg|ucf|pcf)$/i.test(folder)) {
+    folder = folder.replace(/[/\\][^/\\]*$/, '');
+  }
+  folder = folder.replace(/[/\\]+$/, '');
+  if (!folder) return null;
+  return { folderPath: folder, cfgNameLike };
 }
 
 /** Recursively list all files under a directory. */
@@ -1425,7 +2170,11 @@ export function csbToCfgContent(
   for (const v of csb.variables) {
     const resolved = resolveValueType(v, workDir, dmsPathMap);
     if (!v.name || resolved === null) continue;
-    lines.push(`${v.name} ${v.operator} ${resolved}`);
+    if (v.operator === ':') {
+      lines.push(`%${v.name} ${resolved}`);
+    } else {
+      lines.push(`${v.name} ${v.operator} ${resolved}`);
+    }
     if (v.locked) lines.push(`%lock ${v.name}`);
   }
 
@@ -1456,9 +2205,19 @@ function resolveValueType(
       if (entry) {
         return entry.dmsDir.replace(/\\/g, '/') + '/';
       }
+
+      const code = (v.folderCode ?? '').trim().toLowerCase();
+      if (/^dms\d+$/i.test(code)) {
+        return `${fwdWorkDir}/${code}/`;
+      }
+      const projectId = v.folderProjectId;
+      if (typeof projectId === 'number' && Number.isFinite(projectId) && projectId > 0) {
+        return `${fwdWorkDir}/dms${projectId}/`;
+      }
+
       // Not yet downloaded — emit an approximate path with a placeholder dms dir.
       // The cfg parser will flag the unresolved path.
-      const folderName = v.value.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ?? 'unknown';
+      const folderName = v.value.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || 'unknown';
       return `${fwdWorkDir}/dms00000/${folderName}/`;
     }
 
@@ -1505,7 +2264,8 @@ export function buildMasterTmp(
   dmsPathMap: DmsPathMap,
   workspaceName?: string,
   worksetName?: string,
-  pwWorkingDir?: string
+  pwWorkingDir?: string,
+  selectedFolderLocalDir?: string
 ): string {
   // Use the real PW working directory if available (from pwps_dab datasource info).
   // This is the local folder where ProjectWise copies out checked-out files, and is
@@ -1551,6 +2311,12 @@ export function buildMasterTmp(
     lines.push(`# ── Workspace / WorkSet identity (from LastDirPiece) ───────────────`);
     if (workspaceName) lines.push(`_USTN_WORKSPACENAME : ${workspaceName}`);
     if (worksetName)   lines.push(`_USTN_WORKSETNAME   : ${worksetName}`);
+    lines.push(``);
+  }
+
+  if (selectedFolderLocalDir) {
+    lines.push(`# ── Selected document folder ───────────────────────────────────────`);
+    lines.push(`_DGNDIR : ${selectedFolderLocalDir.replace(/\\/g, '/')}/`);
     lines.push(``);
   }
 
@@ -1669,19 +2435,23 @@ function extractLastDirPiece(csbs: CsbBlock[], varName: string): string | undefi
  * PW working directory (used for PW_WORKDIR seeding) can be passed back
  * alongside the CSBs without a second round-trip.
  */
-function parsePowerShellCsbJson(json: string): { csbs: CsbBlock[]; pwWorkingDir: string } {
-  const clean = json.trim();
+function parsePowerShellCsbJson(json: string): { csbs: CsbBlock[]; pwWorkingDir: string; debug?: string[] } {
+  const clean = extractJsonPayload(json);
   const raw = JSON.parse(clean);
 
   // Detect wrapper object format
   let csbArray: any[];
   let pwWorkingDir = '';
+  let debug: string[] | undefined;
 
   if (Array.isArray(raw)) {
     csbArray = raw;
   } else if (raw && typeof raw === 'object' && (raw.Csbs ?? raw.csbs)) {
     csbArray = raw.Csbs ?? raw.csbs ?? [];
     pwWorkingDir = String(raw.WorkingDir ?? raw.workingDir ?? '');
+    debug = Array.isArray(raw.Debug ?? raw.debug)
+      ? (raw.Debug ?? raw.debug).map((v: any) => String(v))
+      : undefined;
   } else {
     // Single CSB object
     csbArray = [raw];
@@ -1692,17 +2462,30 @@ function parsePowerShellCsbJson(json: string): { csbs: CsbBlock[]; pwWorkingDir:
     name: String(item.Name ?? item.name ?? ''),
     description: String(item.Description ?? item.description ?? ''),
     level: normaliseCsbLevel(String(item.Level ?? item.level ?? 'Global')),
-    variables: (item.Variables ?? item.variables ?? []).map((v: any) => ({
-      name: String(v.Name ?? v.name ?? ''),
-      operator: normaliseOperator(String(v.Operator ?? v.operator ?? '=')),
-      value: String(v.Value ?? v.value ?? ''),
-      valueType: normaliseCsbValueType(String(v.ValueType ?? v.valueType ?? 'Literal')),
-      locked: Boolean(v.Locked ?? v.locked ?? false),
-    })),
+    variables: (item.Variables ?? item.variables ?? []).map((v: any) => parsePowerShellVariable(v)),
     linkedCsbIds: Array.isArray(item.LinkedIds) ? item.LinkedIds.map(Number) : [],
   } as CsbBlock));
 
-  return { csbs, pwWorkingDir };
+  return { csbs, pwWorkingDir, debug };
+}
+
+function extractJsonPayload(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+
+  const firstObject = trimmed.indexOf('{');
+  const lastObject = trimmed.lastIndexOf('}');
+  if (firstObject >= 0 && lastObject > firstObject) {
+    return trimmed.slice(firstObject, lastObject + 1);
+  }
+
+  const firstArray = trimmed.indexOf('[');
+  const lastArray = trimmed.lastIndexOf(']');
+  if (firstArray >= 0 && lastArray > firstArray) {
+    return trimmed.slice(firstArray, lastArray + 1);
+  }
+
+  return trimmed;
 }
 
 /**
@@ -1753,6 +2536,11 @@ function normaliseCsbLevel(level: string): CsbLevel {
 }
 
 function normaliseOperator(op: string): CsbVariable['operator'] {
+  const normalised = op.trim().toLowerCase();
+  if (normalised === 'assignment') return '=';
+  if (normalised === 'append') return '>';
+  if (normalised === 'prepend') return '<';
+  if (normalised === 'directive') return ':';
   return (['=', '>', '<', ':'] as const).includes(op as any)
     ? (op as CsbVariable['operator'])
     : '=';
@@ -1760,10 +2548,79 @@ function normaliseOperator(op: string): CsbVariable['operator'] {
 
 function normaliseCsbValueType(vt: string): CsbVariable['valueType'] {
   const map: Record<string, CsbVariable['valueType']> = {
-    literal: 'Literal', pwfolder: 'PWFolder',
-    dms_project: 'dms_project', lastdirpiece: 'LastDirPiece',
+    string: 'Literal',
+    literal: 'Literal',
+    project: 'PWFolder',
+    folder: 'PWFolder',
+    pwfolder: 'PWFolder',
+    dms_project: 'dms_project',
+    lastdirpiece: 'LastDirPiece',
   };
   return map[vt.toLowerCase()] ?? 'Literal';
+}
+
+function parsePowerShellVariable(v: any): CsbVariable {
+  const valuesText = String(
+    firstDefined(v, ['ValuesRaw', 'valuesRaw', 'Values', 'values', 'ValueSummary', 'valueSummary']) ?? ''
+  ).trim();
+
+  let rawOperator = firstDefined(v, ['Operator', 'operator', 'AssignmentOperator', 'assignmentOperator']);
+  if ((rawOperator === undefined || rawOperator === null || rawOperator === '') && valuesText) {
+    const m = valuesText.match(/Op\s*Type\s*:\s*([A-Za-z_]+)/i);
+    if (m) rawOperator = m[1];
+  }
+
+  let rawValueType = firstDefined(v, ['ValueType', 'valueType', 'VariableValueType', 'variableValueType']);
+  if ((rawValueType === undefined || rawValueType === null || rawValueType === '') && valuesText) {
+    const m = valuesText.match(/Value\s*Type\s*:\s*([A-Za-z_]+)/i);
+    if (m) rawValueType = m[1];
+  }
+
+  let rawValue = firstDefined(v, ['Value', 'value', 'VariableValue', 'variableValue']);
+  if ((rawValue === undefined || rawValue === null || rawValue === '') && valuesText) {
+    rawValue = extractValueFromPwValuesText(valuesText) || rawValue;
+  }
+
+  const rawValueTypeText = String(rawValueType ?? '').toLowerCase();
+  if ((rawValueTypeText === 'project' || rawValueTypeText === 'pwfolder' || rawValueTypeText === 'folder') && valuesText) {
+    const forced = extractValueFromPwValuesText(valuesText);
+    if (forced) rawValue = forced;
+  }
+
+  return {
+    name: String(v.Name ?? v.name ?? ''),
+    operator: normaliseOperator(String(rawOperator ?? '=')),
+    value: String(rawValue ?? '').trim(),
+    folderCode: String(firstDefined(v, ['FolderCode', 'folderCode']) ?? '').trim() || undefined,
+    valueType: normaliseCsbValueType(String(rawValueType ?? 'Literal')),
+    locked: Boolean(v.Locked ?? v.locked ?? false),
+  };
+}
+
+function extractValueFromPwValuesText(valuesText: string): string {
+  const text = String(valuesText ?? '')
+    .replace(/[\x00-\x1F\x7F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+
+  const explicit = text.match(/\bValue\s*:\s*(.+)$/i);
+  if (explicit?.[1]) return explicit[1].trim();
+
+  const marker = /Value\s*Type\s*:\s*/i.exec(text);
+  if (!marker) return '';
+  const tail = text.slice(marker.index + marker[0].length).trim();
+  if (!tail) return '';
+
+  const payload = tail.replace(/^\S+\s*/, '').trim();
+  return payload;
+}
+
+function firstDefined(obj: any, names: string[]): any {
+  for (const name of names) {
+    if (obj?.[name] !== undefined && obj?.[name] !== null) return obj[name];
+  }
+  return undefined;
 }
 
 function inferCsbLevelFromPath(pwPath: string): CsbLevel {
