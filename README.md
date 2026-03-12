@@ -2,6 +2,20 @@
 
 Full language support and workspace analysis tooling for Bentley MicroStation / OpenRoads Designer workspace configuration files (`.cfg`, `.ucf`, `.pcf`), including ProjectWise **Managed Workspace** support via CSB extraction.
 
+> **New to the extension?** See the [How-To Guide](HOWTO.md) for step-by-step instructions.
+
+---
+
+## Installation
+
+Install the packaged extension directly into VS Code:
+
+1. Download `bentley-cfg-x.x.x.vsix`
+2. Open VS Code → **Extensions** (`Ctrl+Shift+X`) → `...` menu → **Install from VSIX...**
+3. Select the `.vsix` file and reload when prompted
+
+The extension activates automatically when you open any `.cfg`, `.ucf`, or `.pcf` file.
+
 ---
 
 ## Features
@@ -49,7 +63,7 @@ Live validation on open, change, and save:
 ### Load & Resolve a Local Workspace
 **`Bentley CFG: Load Local Workspace`** — pick a folder containing your workspace CFG files. The extension:
 1. Locates the entry point (`ConfigurationSetup.cfg`, `WorkSpaceSetup.cfg`, etc.)
-2. Processes all `%include` chains, `%if`/`%ifdef` conditionals, and `%level` directives in the correct MicroStation order
+2. Processes all `%include` chains recursively, `%if`/`%ifdef` conditionals, and `%level` directives in the correct MicroStation order
 3. Resolves all `$(VAR)` references, detecting circular dependencies
 4. Validates resolved paths exist on disk
 5. Displays all variables grouped by category with source file, level badge, override history, and resolution issues
@@ -89,6 +103,8 @@ Each CSB is written as a numbered `{CsbID}.cfg` file. A master `.tmp` file is ge
 
 **CFG files** referenced by `_USTN_CONFIGURATION` are downloaded from the PW repository and placed in the working directory so the parser can follow `%include` chains into workspace/workset `.cfg` files.
 
+**Recursive `%include` resolution** — when downloaded CFG files contain `%include @:\...` directives pointing to other PW folders, those folders are downloaded and scanned too (breadth-first, up to 10 passes, with deduplication to prevent loops).
+
 #### CSB Extraction Backends
 
 The extension tries three backends in order:
@@ -121,16 +137,33 @@ Connections are saved and reused. Manage them with **`Bentley CFG: Manage Projec
 
 ---
 
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `Bentley CFG: Validate Current File` | Run diagnostics on the open file |
+| `Bentley CFG: Insert Variable Reference` | Pick and insert a `$(VAR)` |
+| `Bentley CFG: Load Local Workspace` | Load and resolve a folder of CFG files |
+| `Bentley CFG: Resolve Current File` | Resolve the open CFG file |
+| `Bentley CFG: Load ProjectWise Managed Workspace` | Connect to PW, extract CSBs, resolve |
+| `Bentley CFG: Import CSB Content Manually` | Paste CSB content for environments without PW client tools |
+| `Bentley CFG: View Generated Master Config` | Open the generated master `.tmp` file |
+| `Bentley CFG: Manage ProjectWise Connections` | Delete saved PW connections |
+| `Bentley CFG: Compare Loaded Workspaces` | Diff two previously loaded workspaces |
+| `Bentley CFG: Compare Two Workspace Folders` | Diff two local folders directly |
+
+---
+
 ## Language Syntax Reference
 
 ### Assignment Operators
 
 | Operator | Meaning |
 |----------|---------|
-| `=` | Assign (overrides) |
+| `=` | Assign (overrides any existing value) |
 | `>` | Append to path list |
 | `<` | Prepend to path list |
-| `:` | Assign only if not defined |
+| `:` | Assign only if not already defined |
 
 ### Variable References
 
@@ -163,23 +196,6 @@ Connections are saved and reused. Manage them with **`Bentley CFG: Manage Projec
 
 ---
 
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `Bentley CFG: Validate Current File` | Run diagnostics on the open file |
-| `Bentley CFG: Insert Variable Reference` | Pick and insert a `$(VAR)` |
-| `Bentley CFG: Load Local Workspace` | Load and resolve a folder of CFG files |
-| `Bentley CFG: Resolve Current File` | Resolve the open CFG file |
-| `Bentley CFG: Load ProjectWise Managed Workspace` | Connect to PW, extract CSBs, resolve |
-| `Bentley CFG: Import CSB Content Manually` | Paste CSB content for environments without PW client tools |
-| `Bentley CFG: View Generated Master Config` | Open the generated master `.tmp` file |
-| `Bentley CFG: Manage ProjectWise Connections` | Delete saved PW connections |
-| `Bentley CFG: Compare Loaded Workspaces` | Diff two previously loaded workspaces |
-| `Bentley CFG: Compare Two Workspace Folders` | Diff two local folders directly |
-
----
-
 ## Tips
 
 - Always use **forward slashes** (`/`) in paths — never backslashes
@@ -191,60 +207,41 @@ Connections are saved and reused. Manage them with **`Bentley CFG: Manage Projec
 
 ---
 
-## Installation
+## Developer Setup
 
-```bash
-npm install
-npm run compile
-```
+To build and run from source:
 
-## Run in VS Code Extension Development Host
-
-1. Open this folder in VS Code: `c:\Repos\bentley-cfg-vscode`
+1. Clone the repository and open the folder in VS Code
 2. Install dependencies:
 
-	```bash
-	npm install
-	```
+   ```bash
+   npm install
+   ```
 
-3. Compile TypeScript once:
+3. Compile TypeScript:
 
-	```bash
-	npm run compile
-	```
+   ```bash
+   npm run compile
+   ```
 
-4. Start debug mode:
-	- Press **F5**, or
-	- Go to **Run and Debug** and choose **Run Extension**
+4. Press **F5** (or **Run → Run Extension**) to launch the Extension Development Host
 
-5. In the new **Extension Development Host** window:
-	- Open or create a `.cfg`, `.ucf`, or `.pcf` file
-	- Run a command from Command Palette (for example: `Bentley CFG: Validate Current File`)
+5. For live recompilation during development:
 
-6. Make code changes and recompile:
+   ```bash
+   npm run watch
+   ```
 
-	```bash
-	npm run watch
-	```
+   Then use **Developer: Reload Window** in the Extension Development Host to pick up changes.
 
-	Then use **Developer: Reload Window** in the Extension Development Host to pick up changes.
+6. To package a `.vsix` for distribution:
 
-### Troubleshooting
+   ```bash
+   npx @vscode/vsce package
+   ```
 
-- If `npm run compile` fails, run:
+### Troubleshooting the Dev Build
 
-  ```bash
-  npm install
-  npm run compile
-  ```
-
-- If `F5` does not start the host, open **Run and Debug** and select **Run Extension**.
-- If commands are missing, confirm the active editor language is `Bentley CFG` (open a `.cfg` file).
-
-To package and install manually, run:
-
-```bash
-npx @vscode/vsce package
-```
-
-Then install the generated `.vsix` via **Extensions → Install from VSIX**.
+- If `npm run compile` fails, re-run `npm install` first
+- If **F5** does not start the host, open **Run and Debug** and select **Run Extension**
+- If commands are missing in the palette, confirm the active editor language is `Bentley CFG` (open a `.cfg` file)
