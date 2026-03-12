@@ -516,6 +516,52 @@ const os = __importStar(require("os"));
 const fs = __importStar(require("fs"));
 // In-memory store of the last two loaded parse results for comparison
 let lastParseResults = [];
+// ─────────────────────────────────────────────────────────────────────────────
+// DMWF version tracking
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * The DMWF (Digital Managed Workspace Framework) version this extension's
+ * snippets, variables, and templates are based on.
+ *
+ * Bentley releases new DMWF packages annually (aligned with product generation
+ * numbers). When Bentley publishes a newer package, update this constant and
+ * bump the extension version so users receive the notification automatically.
+ */
+const DMWF_BUNDLED_VERSION = '24';
+/**
+ * Key used in globalState to remember which DMWF version the user has already
+ * been notified about.  When DMWF_BUNDLED_VERSION changes the notification
+ * reappears automatically.
+ */
+const DMWF_NOTIFIED_KEY = 'dmwf.notifiedVersion';
+/**
+ * Show a one-time notification informing the user of the bundled DMWF version
+ * and offering a link to check for a newer package on Bentley Communities.
+ *
+ * The notification is suppressed once the user dismisses it for the current
+ * DMWF version.  It reappears automatically when the extension bundles a
+ * newer DMWF version.
+ */
+async function checkDmwfVersion(context) {
+    const notified = context.globalState.get(DMWF_NOTIFIED_KEY);
+    if (notified === DMWF_BUNDLED_VERSION)
+        return; // already acknowledged for this version
+    const downloadUrl = vscode.workspace.getConfiguration('bentley-cfg').get('dmwfDownloadUrl') ??
+        'https://communities.bentley.com/products/projectwise/b/projectwise_blog';
+    const choice = await vscode.window.showInformationMessage(`Bentley CFG: This extension's snippets and templates are based on ` +
+        `DMWF ${DMWF_BUNDLED_VERSION} (v${DMWF_BUNDLED_VERSION}.0.0.0). ` +
+        `A newer DMWF package may be available — download the latest zip from ` +
+        `Bentley Communities or your Bentley Software Downloads portal.`, 'Check for Updates', 'Remind Me Later', 'Dismiss');
+    if (choice === 'Check for Updates') {
+        vscode.env.openExternal(vscode.Uri.parse(downloadUrl));
+        // Don't suppress the notification — user may want to be reminded again after downloading
+    }
+    else if (choice === 'Dismiss') {
+        // User has consciously accepted; suppress for this DMWF version only
+        await context.globalState.update(DMWF_NOTIFIED_KEY, DMWF_BUNDLED_VERSION);
+    }
+    // 'Remind Me Later' or window-close: take no action — notify again next session
+}
 function activate(context) {
     const selector = { language: 'bentley-cfg' };
     // ── Language features ──────────────────────────────────────────────────────
@@ -1124,6 +1170,17 @@ function activate(context) {
             await vscode.window.showTextDocument(doc);
         }
     }));
+    /**
+     * Check DMWF version — manual trigger via command palette.
+     * Clears the "already acknowledged" flag so the prompt always appears.
+     */
+    context.subscriptions.push(vscode.commands.registerCommand('bentley-cfg.checkDmwfVersion', async () => {
+        // Reset acknowledgement so the full prompt shows regardless of prior dismissal
+        await context.globalState.update(DMWF_NOTIFIED_KEY, undefined);
+        await checkDmwfVersion(context);
+    }));
+    // Show the DMWF version notification once per bundled version (non-blocking)
+    checkDmwfVersion(context);
     console.log('Bentley CFG extension activated');
 }
 // ─────────────────────────────────────────────────────────────────────────────
