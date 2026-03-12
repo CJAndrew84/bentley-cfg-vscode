@@ -13,8 +13,10 @@ Step-by-step instructions for all major features of the extension.
 5. [Import CSB Content Manually](#5-import-csb-content-manually)
 6. [View the Generated Master Config](#6-view-the-generated-master-config)
 7. [Compare Two Workspaces](#7-compare-two-workspaces)
-8. [Manage ProjectWise Connections](#8-manage-projectwise-connections)
-9. [Tips and Troubleshooting](#9-tips-and-troubleshooting)
+8. [Deploy a Workspace to ProjectWise (DMWF)](#8-deploy-a-workspace-to-projectwise-dmwf)
+9. [Check for a Newer DMWF Package](#9-check-for-a-newer-dmwf-package)
+10. [Manage ProjectWise Connections](#10-manage-projectwise-connections)
+11. [Tips and Troubleshooting](#11-tips-and-troubleshooting)
 
 ---
 
@@ -66,7 +68,7 @@ Hover your cursor over any known variable name (e.g. `_USTN_WORKSPACENAME`) or d
 
 ### Snippets
 
-Type a snippet prefix and press **Tab** to expand. Useful prefixes:
+Type a snippet prefix and press **Tab** to expand. The extension includes 73 snippets across general workspace patterns and the full DMWF pattern library. Useful prefixes:
 
 | Prefix | Expands to |
 |--------|-----------|
@@ -77,6 +79,11 @@ Type a snippet prefix and press **Tab** to expand. Useful prefixes:
 | `workspace-cfg` | Full WorkSpace CFG template |
 | `workset-cfg` | Full WorkSet CFG template |
 | `ord-cfg` | OpenRoads Designer CFG template |
+| `dmwf-predefined` | DMWF CSB Predefined boilerplate |
+| `dmwf-workarea` | DMWF WorkArea PWSetup template |
+| `version-check` | DMWF product version enforcement block |
+
+See [snippets.md](snippets.md) for the complete reference including all prefixes, tab-stop fields, and descriptions.
 
 ### Validation diagnostics
 
@@ -275,7 +282,92 @@ Use workspace comparison to identify differences between environments, workspace
 
 ---
 
-## 8. Manage ProjectWise Connections
+## 8. Deploy a Workspace to ProjectWise (DMWF)
+
+Use this to push a locally-authored workspace up to ProjectWise, completing the full **Dynamic Managed Workspace Framework (DMWF)** round-trip: author locally → validate → deploy to PW.
+
+> **What gets deployed?**
+> A DMWF deployment has two parts: **repository files** (`.cfg` and standards files stored as PW documents, uploaded automatically) and **CSBs** (Configuration Settings Blocks, which are database-level variables that cannot be written via WSG). The extension uploads repository files and generates a ready-to-run PowerShell script for the PW administrator to create the CSBs.
+
+### Option A — Deploy to a live ProjectWise server
+
+1. Open the Command Palette and run **Bentley CFG: Deploy Workspace to ProjectWise**
+2. **Step 1 — Connection**: pick a saved PW connection or create a new one (see [section 10](#10-manage-projectwise-connections) for connection setup)
+3. **Step 2 — Local folder**: choose the workspace root folder on your machine
+4. **Step 3 — Target folder**: browse the PW folder tree and select the folder to deploy into
+5. **Step 4 — File selection**: choose **CFG files only** (`.cfg` / `.ucf` / `.pcf`) or **CFG + standards** (includes `.dgnlib`, `.cel`, seed files, etc.)
+
+The extension then:
+- Creates any missing sub-folders in PW (mirroring your local structure)
+- Uploads new documents; updates existing ones in place
+- Writes `deploy-csb.ps1` — a PowerShell script the PW admin runs once to create the Managed Workspace Profile and wire up the CSBs
+- Writes `deploy-report.txt` — a full per-file outcome log
+
+> **Re-deploying is safe** — files are updated in place and the CSB script skips objects that already exist.
+
+### Option B — Export a deployment package (no live PW connection)
+
+1. Open the Command Palette and run **Bentley CFG: Export Deployment Package**
+2. Choose the local workspace root folder
+3. The extension generates `deploy-csb.ps1` locally
+
+Hand the workspace folder (with the script) to your PW administrator for manual import. No PW connection is required on your machine.
+
+### Running the PowerShell CSB script
+
+The generated `deploy-csb.ps1` uses the **PWPS_DAB** module (ships with PW Explorer CONNECT Edition). Edit the `$Config` section at the top of the script, then run it from a PowerShell prompt:
+
+```powershell
+.\deploy-csb.ps1
+```
+
+The script will:
+1. Connect to the datasource
+2. Create a **Managed Workspace Profile** for the workspace
+3. Create a **WorkSpace CSB** (Level 3) setting `_USTN_CONFIGURATION`, `_USTN_WORKSPACEROOT`, etc.
+4. Create one **WorkSet CSB** (Level 4) per detected workset
+5. Assign the profile to the chosen PW **Application**
+
+---
+
+## 9. Check for a Newer DMWF Package
+
+The extension's snippets and templates are based on **DMWF 24** (v24.0.0.0). Bentley publishes updated DMWF packages periodically; when a new version ships your workspace version strings (e.g. `_DYNAMIC_CONFIGS > MyFile.cfg 24.0.0.0`) should be updated to match.
+
+### Automatic notification on first activation
+
+The first time the extension activates after installation (or after a version bump), a notification appears:
+
+> *"This extension's snippets and templates are based on DMWF 24 (v24.0.0.0). A newer DMWF package may be available — download the latest zip from Bentley Communities or your Bentley Software Downloads portal."*
+
+| Button | Effect |
+|--------|--------|
+| **Check for Updates** | Opens the Bentley Communities download URL in your browser |
+| **Remind Me Later** | Closes — the notification reappears next session |
+| **Dismiss** | Suppresses until the extension bundles a newer DMWF version |
+
+### Trigger manually
+
+If you've already dismissed the notification but want to check again (e.g. after your PW administrator has installed a new DMWF package):
+
+1. Open the Command Palette (**Ctrl+Shift+P**)
+2. Run **Bentley CFG: Check for DMWF Updates**
+
+This resets the dismissal state and re-shows the notification immediately.
+
+### Customise the download URL
+
+The **Check for Updates** button opens the URL stored in the `bentley-cfg.dmwfDownloadUrl` setting. To point it at a direct zip download:
+
+1. Open **File → Preferences → Settings** (**Ctrl+,**)
+2. Search for `dmwf`
+3. Update **Bentley-cfg: Dmwf Download Url** to the direct zip URL from your Bentley portal
+
+> The DMWF package requires a Bentley account to download. Check [Bentley Communities](https://communities.bentley.com) or your Bentley Software Downloads portal.
+
+---
+
+## 10. Manage ProjectWise Connections
 
 Saved connections can be viewed and deleted at any time.
 
@@ -289,7 +381,7 @@ To add a new connection, simply run **Bentley CFG: Load ProjectWise Managed Work
 
 ---
 
-## 9. Tips and Troubleshooting
+## 11. Tips and Troubleshooting
 
 ### General tips
 

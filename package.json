@@ -107,8 +107,32 @@
         "command": "bentley-cfg.viewMasterTmp",
         "title": "Bentley CFG: View Generated Master Config",
         "icon": "$(file-code)"
+      },
+      {
+        "command": "bentley-cfg.deployWorkspaceToPw",
+        "title": "Bentley CFG: Deploy Workspace to ProjectWise",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "bentley-cfg.exportDeploymentPackage",
+        "title": "Bentley CFG: Export Deployment Package",
+        "icon": "$(package)"
+      },
+      {
+        "command": "bentley-cfg.checkDmwfVersion",
+        "title": "Bentley CFG: Check for DMWF Updates"
       }
     ],
+    "configuration": {
+      "title": "Bentley Workspace Configuration",
+      "properties": {
+        "bentley-cfg.dmwfDownloadUrl": {
+          "type": "string",
+          "default": "https://communities.bentley.com/products/projectwise/b/projectwise_blog",
+          "description": "URL opened when checking for a newer DMWF (Digital Managed Workspace Framework) package. Defaults to the Bentley Communities ProjectWise blog where DMWF releases are announced. Override with a direct zip URL once your Bentley account locates the latest package."
+        }
+      }
+    },
     "menus": {
       "editor/context": [
         {
@@ -158,6 +182,15 @@
         },
         {
           "command": "bentley-cfg.viewMasterTmp"
+        },
+        {
+          "command": "bentley-cfg.deployWorkspaceToPw"
+        },
+        {
+          "command": "bentley-cfg.exportDeploymentPackage"
+        },
+        {
+          "command": "bentley-cfg.checkDmwfVersion"
         }
       ]
     }

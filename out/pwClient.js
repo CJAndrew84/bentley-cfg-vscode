@@ -140,6 +140,91 @@ class ProjectWiseClient {
         const body = await this.getRaw(url);
         return JSON.parse(body);
     }
+    // ─── Write operations ───────────────────────────────────────────────────────
+    /**
+     * Create a sub-folder (Project) inside the given parent folder.
+     * Uses POST to PW_WSG/Project with the parent GUID in the JSON body.
+     */
+    async createFolder(parentGuid, name, description = '') {
+        const body = JSON.stringify({
+            instance: {
+                schemaName: 'PW_WSG',
+                className: 'Project',
+                properties: {
+                    Name: name,
+                    Description: description,
+                    ParentGuid: parentGuid,
+                },
+            },
+        });
+        const data = await this.postJson('/Project', body);
+        return mapProject(data.instance ?? data);
+    }
+    /**
+     * Find an existing child folder by name, or create it if absent.
+     * Returns the folder's instanceId and name.
+     */
+    async findOrCreateFolder(parentGuid, name) {
+        const children = await this.listSubFolders(parentGuid);
+        const existing = children.find(f => f.name.toLowerCase() === name.toLowerCase());
+        if (existing)
+            return existing;
+        return this.createFolder(parentGuid, name);
+    }
+    /**
+     * Search for a document with a matching file name inside a folder.
+     * Returns undefined when not found.
+     */
+    async findDocumentByName(folderGuid, fileName) {
+        const docs = await this.listDocuments(folderGuid);
+        return docs.find(d => d.fileName.toLowerCase() === fileName.toLowerCase());
+    }
+    /**
+     * Create a new document (metadata only) inside a folder.
+     * Call uploadDocumentContent() afterwards to attach the file bytes.
+     */
+    async createDocument(folderGuid, fileName, description = '') {
+        const body = JSON.stringify({
+            instance: {
+                schemaName: 'PW_WSG',
+                className: 'Document',
+                properties: {
+                    FileName: fileName,
+                    Name: fileName,
+                    Description: description,
+                    ParentGuid: folderGuid,
+                },
+            },
+        });
+        const data = await this.postJson('/Document', body);
+        return mapDocument(data.instance ?? data);
+    }
+    /**
+     * PUT the raw file bytes to a document's $file endpoint.
+     * Works for both initial upload and subsequent updates.
+     */
+    async uploadDocumentContent(docInstanceId, content) {
+        const url = `${this.baseUrl}/Document/${docInstanceId}/$file`;
+        await this.putRaw(url, Buffer.from(content, 'utf8'), 'application/octet-stream');
+    }
+    /**
+     * Create-or-update a document in a folder.
+     * If a document with the same file name already exists, its content is
+     * replaced; otherwise a new document is created then uploaded.
+     *
+     * Returns the document metadata and whether it was newly created.
+     */
+    async upsertDocument(folderGuid, fileName, content) {
+        const existing = await this.findDocumentByName(folderGuid, fileName);
+        if (existing) {
+            await this.uploadDocumentContent(existing.instanceId, content);
+            return { doc: existing, created: false };
+        }
+        const doc = await this.createDocument(folderGuid, fileName);
+        await this.uploadDocumentContent(doc.instanceId, content);
+        return { doc, created: true };
+    }
+    // ─── Private helpers ─────────────────────────────────────────────────────────
     getRaw(url) {
         return new Promise((resolve, reject) => {
             const isHttps = url.startsWith('https');
@@ -168,6 +253,75 @@ class ProjectWiseClient {
             });
             req.on('error', reject);
             req.setTimeout(30000, () => { req.destroy(); reject(new Error('Request timeout')); });
+        });
+    }
+    postJson(endpoint, body) {
+        return new Promise((resolve, reject) => {
+            const url = `${this.baseUrl}${endpoint}!poly`;
+            const isHttps = url.startsWith('https');
+            const lib = isHttps ? https : http;
+            const options = {
+                method: 'POST',
+                headers: {
+                    ...this.headers,
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                },
+                rejectUnauthorized: !this.ignoreSsl,
+            };
+            const req = lib.request(url, options, res => {
+                const chunks = [];
+                res.on('data', (d) => chunks.push(d));
+                res.on('end', () => {
+                    const text = Buffer.concat(chunks).toString('utf8');
+                    if ((res.statusCode ?? 0) >= 400) {
+                        reject(new Error(`HTTP ${res.statusCode} POST ${endpoint}: ${text.slice(0, 300)}`));
+                        return;
+                    }
+                    try {
+                        resolve(JSON.parse(text));
+                    }
+                    catch {
+                        resolve({});
+                    }
+                });
+                res.on('error', reject);
+            });
+            req.on('error', reject);
+            req.setTimeout(30000, () => { req.destroy(); reject(new Error('Request timeout')); });
+            req.write(body);
+            req.end();
+        });
+    }
+    putRaw(url, body, contentType) {
+        return new Promise((resolve, reject) => {
+            const isHttps = url.startsWith('https');
+            const lib = isHttps ? https : http;
+            const options = {
+                method: 'PUT',
+                headers: {
+                    ...this.headers,
+                    'Content-Type': contentType,
+                    'Content-Length': body.length,
+                },
+                rejectUnauthorized: !this.ignoreSsl,
+            };
+            const req = lib.request(url, options, res => {
+                const chunks = [];
+                res.on('data', (d) => chunks.push(d));
+                res.on('end', () => {
+                    if ((res.statusCode ?? 0) >= 400) {
+                        reject(new Error(`HTTP ${res.statusCode} PUT ${url}: ${Buffer.concat(chunks).toString('utf8').slice(0, 300)}`));
+                        return;
+                    }
+                    resolve();
+                });
+                res.on('error', reject);
+            });
+            req.on('error', reject);
+            req.setTimeout(60000, () => { req.destroy(); reject(new Error('Upload timeout')); });
+            req.write(body);
+            req.end();
         });
     }
 }

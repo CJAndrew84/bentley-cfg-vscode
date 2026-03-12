@@ -1,6 +1,6 @@
 # Bentley Workspace Configuration (CFG) — VS Code Extension
 
-Full language support and workspace analysis tooling for Bentley MicroStation / OpenRoads Designer workspace configuration files (`.cfg`, `.ucf`, `.pcf`), including ProjectWise **Managed Workspace** support via CSB extraction.
+Full language support and workspace analysis tooling for Bentley MicroStation / OpenRoads Designer workspace configuration files (`.cfg`, `.ucf`, `.pcf`), including ProjectWise **Managed Workspace** support via CSB extraction and full **DMWF (Dynamic Managed Workspace Framework)** deployment tooling.
 
 > **New to the extension?** See the [How-To Guide](HOWTO.md) for step-by-step instructions.
 
@@ -43,7 +43,9 @@ Includes article-backed documentation for many current OpenRoads/OpenSite worksp
 - Civil reports, survey tolerance, print-performance, upgrade, and admin variables from Bentley's 2025 CFG tips
 
 ### Snippets
-30+ snippets including full workspace/workset/org templates. Key prefixes: `hdr`, `safeinclude`, `wildinclude`, `networkfallback`, `workspace-cfg`, `workset-cfg`, `ord-cfg`.
+73 snippets covering workspace/workset/org templates and the complete DMWF pattern library. Key prefixes: `hdr`, `safeinclude`, `wildinclude`, `networkfallback`, `workspace-cfg`, `workset-cfg`, `ord-cfg`, `dmwf-predefined`, `dmwf-workarea`, `version-check`.
+
+See the full [Snippets Reference](snippets.md) for all prefixes, descriptions, and tab-stop details.
 
 ### Validation / Diagnostics
 Live validation on open, change, and save:
@@ -137,6 +139,92 @@ Connections are saved and reused. Manage them with **`Bentley CFG: Manage Projec
 
 ---
 
+## Deploying a Workspace (DMWF)
+
+The extension can push a locally-authored workspace up to ProjectWise, enabling a full **Dynamic Managed Workspace Framework (DMWF)** round-trip: author locally → validate → deploy to PW.
+
+### What "deployment" means
+
+A Bentley Dynamic Managed Workspace Framework (DMWF) deployment has two parts:
+
+| Part | What it is | How the extension handles it |
+|------|-----------|------------------------------|
+| **Repository files** | `.cfg` / standards files stored as regular PW documents | Uploaded automatically via WSG REST API |
+| **CSBs** (Configuration Settings Blocks) | Database-level variables injected before MicroStation opens | CSBs cannot be written via WSG. The extension generates a ready-to-run **PowerShell script** (`deploy-csb.ps1`) for the PW admin |
+
+### Deploy Workspace to ProjectWise
+
+**`Bentley CFG: Deploy Workspace to ProjectWise`** — four-step wizard:
+
+1. **Connection** — pick a saved PW connection or create a new one
+2. **Local folder** — choose the workspace root on your machine
+3. **Target folder** — browse to the PW folder that will host the files
+4. **File selection** — CFG files only, or CFG + standards (`.dgnlib`, `.cel`, seeds, etc.)
+
+The extension then:
+- Creates any missing sub-folders in PW (mirroring your local structure)
+- Uploads new documents; updates existing ones in place
+- Writes `deploy-csb.ps1` — a PowerShell script the PW admin runs once to create the Managed Workspace Profile and wire up the CSBs
+- Writes `deploy-report.txt` — a full per-file outcome log
+
+> **Re-deploying** is safe: files are updated in place and the CSB script checks for existing objects before creating new ones.
+
+### Export Deployment Package (offline)
+
+**`Bentley CFG: Export Deployment Package`** — same as above but without a live PW connection. Generates `deploy-csb.ps1` locally so you can hand the whole workspace folder to a PW administrator for manual import.
+
+### PowerShell CSB script (`deploy-csb.ps1`)
+
+The generated script uses the **PWPS_DAB** module (ships with PW Explorer CONNECT Edition):
+
+```powershell
+# Edit the $Config section at the top, then run:
+.\deploy-csb.ps1
+```
+
+It will:
+1. Connect to the datasource
+2. Create a **Managed Workspace Profile** for the workspace
+3. Create a **WorkSpace CSB** (Level 3) setting `_USTN_CONFIGURATION`, `_USTN_WORKSPACEROOT`, etc.
+4. Create one **WorkSet CSB** (Level 4) per detected workset
+5. Assign the profile to the chosen PW **Application**
+
+CSB creation is idempotent — objects that already exist are skipped.
+
+---
+
+## DMWF Version Check
+
+The extension's snippets, IntelliSense variables, and deployment templates are based on **DMWF 24** (v24.0.0.0). Bentley publishes updated DMWF packages periodically; when a new version ships, your workspace's `_DYNAMIC_CONFIGS` version strings and PWSetup templates should be updated to match.
+
+### Automatic notification
+
+On first activation after install or upgrade, the extension shows a one-time notification:
+
+> *"This extension's snippets and templates are based on DMWF 24 (v24.0.0.0). A newer DMWF package may be available — download the latest zip from Bentley Communities or your Bentley Software Downloads portal."*
+
+| Button | Action |
+|--------|--------|
+| **Check for Updates** | Opens the configured download URL in your browser (see Setting below) |
+| **Remind Me Later** | Closes without recording anything — notification reappears next session |
+| **Dismiss** | Suppresses the notification for this DMWF version; reappears when the extension bundles a newer version |
+
+### Trigger manually
+
+Run **`Bentley CFG: Check for DMWF Updates`** from the Command Palette at any time to re-show the prompt (e.g. after a PW administrator has installed a new DMWF package and you want to verify you're on the latest version).
+
+### Setting — `bentley-cfg.dmwfDownloadUrl`
+
+Controls the URL opened by **Check for Updates**. Default points to the Bentley Communities ProjectWise blog where DMWF releases are announced. Override this with a direct zip URL once your Bentley account has located the latest package:
+
+```json
+"bentley-cfg.dmwfDownloadUrl": "https://communities.bentley.com/products/projectwise/b/projectwise_blog"
+```
+
+> The DMWF package is distributed by Bentley and requires a Bentley account to download. Check [Bentley Communities](https://communities.bentley.com) or the Bentley Software Downloads portal for the latest release.
+
+---
+
 ## Commands
 
 | Command | Description |
@@ -151,6 +239,9 @@ Connections are saved and reused. Manage them with **`Bentley CFG: Manage Projec
 | `Bentley CFG: Manage ProjectWise Connections` | Delete saved PW connections |
 | `Bentley CFG: Compare Loaded Workspaces` | Diff two previously loaded workspaces |
 | `Bentley CFG: Compare Two Workspace Folders` | Diff two local folders directly |
+| `Bentley CFG: Deploy Workspace to ProjectWise` | Upload local workspace files to PW + generate CSB script |
+| `Bentley CFG: Export Deployment Package` | Generate `deploy-csb.ps1` without a live PW connection |
+| `Bentley CFG: Check for DMWF Updates` | Re-show the DMWF version notification and open the download link |
 
 ---
 

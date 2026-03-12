@@ -510,11 +510,58 @@ const cfgParser_1 = require("./cfgParser");
 const pwClient_1 = require("./pwClient");
 const workspaceExplorer_1 = require("./workspaceExplorer");
 const csbExtractor_1 = require("./csbExtractor");
+const workspaceDeployer_1 = require("./workspaceDeployer");
 const path = __importStar(require("path"));
 const os = __importStar(require("os"));
 const fs = __importStar(require("fs"));
 // In-memory store of the last two loaded parse results for comparison
 let lastParseResults = [];
+// ─────────────────────────────────────────────────────────────────────────────
+// DMWF version tracking
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * The DMWF (Digital Managed Workspace Framework) version this extension's
+ * snippets, variables, and templates are based on.
+ *
+ * Bentley releases new DMWF packages annually (aligned with product generation
+ * numbers). When Bentley publishes a newer package, update this constant and
+ * bump the extension version so users receive the notification automatically.
+ */
+const DMWF_BUNDLED_VERSION = '24';
+/**
+ * Key used in globalState to remember which DMWF version the user has already
+ * been notified about.  When DMWF_BUNDLED_VERSION changes the notification
+ * reappears automatically.
+ */
+const DMWF_NOTIFIED_KEY = 'dmwf.notifiedVersion';
+/**
+ * Show a one-time notification informing the user of the bundled DMWF version
+ * and offering a link to check for a newer package on Bentley Communities.
+ *
+ * The notification is suppressed once the user dismisses it for the current
+ * DMWF version.  It reappears automatically when the extension bundles a
+ * newer DMWF version.
+ */
+async function checkDmwfVersion(context) {
+    const notified = context.globalState.get(DMWF_NOTIFIED_KEY);
+    if (notified === DMWF_BUNDLED_VERSION)
+        return; // already acknowledged for this version
+    const downloadUrl = vscode.workspace.getConfiguration('bentley-cfg').get('dmwfDownloadUrl') ??
+        'https://communities.bentley.com/products/projectwise/b/projectwise_blog';
+    const choice = await vscode.window.showInformationMessage(`Bentley CFG: This extension's snippets and templates are based on ` +
+        `DMWF ${DMWF_BUNDLED_VERSION} (v${DMWF_BUNDLED_VERSION}.0.0.0). ` +
+        `A newer DMWF package may be available — download the latest zip from ` +
+        `Bentley Communities or your Bentley Software Downloads portal.`, 'Check for Updates', 'Remind Me Later', 'Dismiss');
+    if (choice === 'Check for Updates') {
+        vscode.env.openExternal(vscode.Uri.parse(downloadUrl));
+        // Don't suppress the notification — user may want to be reminded again after downloading
+    }
+    else if (choice === 'Dismiss') {
+        // User has consciously accepted; suppress for this DMWF version only
+        await context.globalState.update(DMWF_NOTIFIED_KEY, DMWF_BUNDLED_VERSION);
+    }
+    // 'Remind Me Later' or window-close: take no action — notify again next session
+}
 function activate(context) {
     const selector = { language: 'bentley-cfg' };
     // ── Language features ──────────────────────────────────────────────────────
@@ -681,6 +728,7 @@ function activate(context) {
             const applications = await (0, csbExtractor_1.listPwApplications)(client);
             let applicationInstanceId;
             let folderGuid;
+            let documentGuid;
             let label = `PW: ${conn.label}`;
             if (applications.length > 0) {
                 // Application list available — user picks the Application first
@@ -726,14 +774,20 @@ function activate(context) {
                     vscode.window.showInformationMessage(`Resolved Application "${app.name}" from folder. Using its Managed Workspace Profile.`);
                 }
             }
-            // Optionally pick the document folder for WorkSet/Discipline CSBs
-            // (only needed if the Application alone doesn't cover WorkSet-level CSBs)
+            // Optionally provide a document or folder GUID for WorkSet/Discipline CSBs.
+            // CSBs assigned at WorkSet/Discipline level are tied to the specific PW
+            // folder (Work Area) the document lives in — the Application-level CSBs
+            // alone don't carry those. The user can supply either:
+            //   • A folder GUID (for folder-level CSB assignment)
+            //   • A document GUID (extension resolves it to its parent folder via
+            //     pwps_dab Get-PWDocument or dmscli aaApi_SelectDocumentByGuid)
             if (applicationInstanceId && !folderGuid) {
-                const wantFolder = await vscode.window.showQuickPick([
-                    { label: '$(folder) Select a document folder (WorkSet-level CSBs)', detail: 'yes' },
+                const wantScope = await vscode.window.showQuickPick([
+                    { label: '$(folder) Select a document folder (WorkSet-level CSBs)', detail: 'folder' },
+                    { label: '$(file) Enter a document GUID (extension resolves folder)', detail: 'document' },
                     { label: '$(pass) Application CSBs only', detail: 'no' },
-                ], { placeHolder: 'Do you want to specify the document folder for WorkSet/Discipline CSBs?' });
-                if (wantFolder?.detail === 'yes') {
+                ], { placeHolder: 'Do you want to include WorkSet/Discipline CSBs for a specific document or folder?' });
+                if (wantScope?.detail === 'folder') {
                     panel.showLoading('Select document folder (RichProject navigation or GUID)...');
                     const folderSelection = await promptForPwFolderGuid(client, {
                         title: 'Select Document Folder',
@@ -743,6 +797,18 @@ function activate(context) {
                         folderGuid = folderSelection.folderGuid;
                     }
                 }
+                else if (wantScope?.detail === 'document') {
+                    const docGuidInput = await vscode.window.showInputBox({
+                        title: 'Document GUID',
+                        prompt: 'Enter the GUID of the ProjectWise document whose CSBs you want to extract',
+                        placeHolder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+                        validateInput: v => v.trim() ? null : 'Document GUID is required.',
+                    });
+                    if (docGuidInput?.trim()) {
+                        documentGuid = docGuidInput.trim();
+                        label += ` / doc:${documentGuid}`;
+                    }
+                }
             }
             // ── Step 2: Extract CSBs and build working directory ──────────────────
             panel.showLoading('Extracting Configuration Settings Blocks (CSBs)...');
@@ -750,6 +816,7 @@ function activate(context) {
                 datasource: conn.datasource,
                 applicationInstanceId,
                 folderGuid,
+                documentGuid,
             }, client);
             const backendMsg = `Backend: ${extraction.backend} | CSBs: ${extraction.csbs.length}`;
             const warnings = extraction.messages.filter(m => m.level === 'warning' || m.level === 'error');
@@ -771,6 +838,191 @@ function activate(context) {
         }
         catch (e) {
             vscode.window.showErrorMessage(`ProjectWise error: ${e}`);
+        }
+    }));
+    /**
+     * Deploy a local workspace folder to ProjectWise
+     *
+     * Workflow:
+     *   1. Pick a saved PW connection (or create a new one)
+     *   2. Pick the local workspace root folder
+     *   3. Browse to the target PW folder
+     *   4. Choose whether to include standards files (.dgnlib, .cel, etc.)
+     *   5. Preview the deployment plan (file count, folder structure)
+     *   6. Execute — folders are created in PW, files are uploaded/updated
+     *   7. A deploy-csb.ps1 and deploy-report.txt are written next to the
+     *      local workspace root for the PW admin to use
+     */
+    context.subscriptions.push(vscode.commands.registerCommand('bentley-cfg.deployWorkspaceToPw', async () => {
+        // ── Pick connection ──────────────────────────────────────────────────
+        const saved = context.globalState.get('pw.connections', []);
+        const connItems = [
+            { label: '$(add) New ProjectWise connection...', description: '' },
+            ...saved.map(c => ({
+                label: `$(server) ${c.label}`,
+                description: `${c.wsgUrl} / ${c.datasource}`,
+                detail: c.id,
+            })),
+        ];
+        const chosenConn = await vscode.window.showQuickPick(connItems, {
+            placeHolder: 'Select a ProjectWise connection',
+            title: 'Deploy Workspace to ProjectWise — Step 1/4: Connection',
+        });
+        if (!chosenConn)
+            return;
+        let conn;
+        if (chosenConn.label.includes('New ProjectWise connection')) {
+            const newConn = await promptNewConnection();
+            if (!newConn)
+                return;
+            conn = newConn;
+            saved.push(conn);
+            await context.globalState.update('pw.connections', saved);
+        }
+        else {
+            conn = saved.find(c => c.id === chosenConn.detail);
+            if (!conn)
+                return;
+        }
+        let password = await context.secrets.get(`pw.pass.${conn.id}`);
+        if (!password) {
+            password = await vscode.window.showInputBox({
+                prompt: `Password for ${conn.username}@${conn.wsgUrl}`,
+                password: true,
+            });
+            if (!password)
+                return;
+            await context.secrets.store(`pw.pass.${conn.id}`, password);
+        }
+        // ── Pick local workspace folder ──────────────────────────────────────
+        const localPick = await vscode.window.showOpenDialog({
+            canSelectFolders: true,
+            canSelectFiles: false,
+            canSelectMany: false,
+            openLabel: 'Select workspace root folder',
+            title: 'Deploy Workspace to ProjectWise — Step 2/4: Local Folder',
+        });
+        if (!localPick || localPick.length === 0)
+            return;
+        const localRoot = localPick[0].fsPath;
+        // ── Build PW client and pick target folder ───────────────────────────
+        const client = new pwClient_1.ProjectWiseClient({
+            wsgUrl: conn.wsgUrl,
+            datasource: conn.datasource,
+            username: conn.username,
+            credential: password,
+            authType: conn.authType,
+            ignoreSsl: conn.ignoreSsl,
+        });
+        const folderSelection = await promptForPwFolderGuid(client, {
+            title: 'Deploy Workspace to ProjectWise — Step 3/4: Target Folder',
+            placeHolder: 'Select the ProjectWise folder to deploy into',
+        });
+        if (!folderSelection)
+            return;
+        // ── Choose whether to include standards files ────────────────────────
+        const stdsPick = await vscode.window.showQuickPick([
+            {
+                label: '$(file-code) CFG files only (.cfg / .ucf / .pcf)',
+                description: 'Fastest — just the configuration files',
+                detail: 'cfg',
+            },
+            {
+                label: '$(files) CFG + standards files',
+                description: 'Also upload .dgnlib, .cel, .dgn seeds, .pltcfg, .xml, .tbl …',
+                detail: 'all',
+            },
+        ], {
+            placeHolder: 'Which files should be deployed?',
+            title: 'Deploy Workspace to ProjectWise — Step 4/4: File Selection',
+        });
+        if (!stdsPick)
+            return;
+        const includeStandards = stdsPick.detail === 'all';
+        // ── Build and preview the plan ───────────────────────────────────────
+        const plan = (0, workspaceDeployer_1.buildDeploymentPlan)(localRoot, folderSelection.folderGuid, folderSelection.folderLabel, includeStandards);
+        if (plan.files.length === 0) {
+            vscode.window.showWarningMessage(`No deployable files found in "${localRoot}". Make sure the folder contains .cfg / .ucf / .pcf files.`);
+            return;
+        }
+        const cfgCount = plan.files.filter(f => /\.(cfg|ucf|pcf)$/i.test(f.fileName)).length;
+        const totalCount = plan.files.length;
+        const folderCount = plan.foldersToEnsure.length;
+        const preview = await vscode.window.showInformationMessage(`Deploy preview:\n` +
+            `  ${totalCount} file(s) (${cfgCount} CFG) in ${folderCount} folder(s)\n` +
+            `  → ${folderSelection.folderLabel} on ${conn.label}\n\n` +
+            `Existing documents will be updated; new ones created.`, { modal: true }, 'Deploy', 'Cancel');
+        if (preview !== 'Deploy')
+            return;
+        // ── Execute ──────────────────────────────────────────────────────────
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: `Deploying workspace to ProjectWise (${conn.label})`,
+            cancellable: false,
+        }, async (progress) => {
+            try {
+                const result = await (0, workspaceDeployer_1.executeDeployment)(client, plan, (msg, frac) => {
+                    progress.report({ message: msg, increment: frac * 100 });
+                });
+                const summary = `Deployment complete:\n` +
+                    `  Created: ${result.created}  Updated: ${result.updated}  Failed: ${result.failed}`;
+                const actions = ['View Report'];
+                if (result.failed === 0) {
+                    actions.unshift('Open CSB Script');
+                }
+                vscode.window.showInformationMessage(summary, ...actions).then(choice => {
+                    if (choice === 'Open CSB Script') {
+                        vscode.window.showTextDocument(vscode.Uri.file(result.psScriptPath));
+                    }
+                    else if (choice === 'View Report') {
+                        vscode.window.showTextDocument(vscode.Uri.file(result.reportPath));
+                    }
+                });
+                if (result.failed > 0) {
+                    vscode.window.showWarningMessage(`${result.failed} file(s) failed to upload. See deploy-report.txt for details.`);
+                }
+            }
+            catch (e) {
+                vscode.window.showErrorMessage(`Deployment failed: ${e}`);
+            }
+        });
+    }));
+    /**
+     * Export a deployment package (zip + PowerShell script) without uploading.
+     * Useful when the user wants to hand the package to a PW admin.
+     */
+    context.subscriptions.push(vscode.commands.registerCommand('bentley-cfg.exportDeploymentPackage', async () => {
+        const localPick = await vscode.window.showOpenDialog({
+            canSelectFolders: true,
+            canSelectFiles: false,
+            canSelectMany: false,
+            openLabel: 'Select workspace root folder',
+            title: 'Export Deployment Package — Select Workspace',
+        });
+        if (!localPick || localPick.length === 0)
+            return;
+        const localRoot = localPick[0].fsPath;
+        const stdsPick = await vscode.window.showQuickPick([
+            { label: 'CFG files only', detail: 'cfg' },
+            { label: 'CFG + standards files', detail: 'all' },
+        ], { placeHolder: 'Which files to include in the package?' });
+        if (!stdsPick)
+            return;
+        const includeStandards = stdsPick.detail === 'all';
+        // Build plan with a placeholder GUID (no PW connection needed for export)
+        const plan = (0, workspaceDeployer_1.buildDeploymentPlan)(localRoot, 'export', 'export', includeStandards);
+        if (plan.files.length === 0) {
+            vscode.window.showWarningMessage(`No deployable files found in "${localRoot}".`);
+            return;
+        }
+        // Generate the PowerShell CSB setup script locally
+        const scriptPath = (0, workspaceDeployer_1.generateDeploymentPackage)(plan);
+        const choice = await vscode.window.showInformationMessage(`Deployment package generated:\n  ${plan.files.length} file(s)\n  PowerShell CSB script: ${path.basename(scriptPath)}`, 'Open Script', 'Open Folder');
+        if (choice === 'Open Script') {
+            vscode.window.showTextDocument(vscode.Uri.file(scriptPath));
+        }
+        else if (choice === 'Open Folder') {
+            vscode.env.openExternal(vscode.Uri.file(localRoot));
         }
     }));
     /**
@@ -918,6 +1170,17 @@ function activate(context) {
             await vscode.window.showTextDocument(doc);
         }
     }));
+    /**
+     * Check DMWF version — manual trigger via command palette.
+     * Clears the "already acknowledged" flag so the prompt always appears.
+     */
+    context.subscriptions.push(vscode.commands.registerCommand('bentley-cfg.checkDmwfVersion', async () => {
+        // Reset acknowledgement so the full prompt shows regardless of prior dismissal
+        await context.globalState.update(DMWF_NOTIFIED_KEY, undefined);
+        await checkDmwfVersion(context);
+    }));
+    // Show the DMWF version notification once per bundled version (non-blocking)
+    checkDmwfVersion(context);
     console.log('Bentley CFG extension activated');
 }
 // ─────────────────────────────────────────────────────────────────────────────
