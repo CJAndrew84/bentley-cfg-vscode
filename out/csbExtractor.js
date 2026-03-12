@@ -121,10 +121,16 @@ exports.CSB_LEVEL_MAP = {
 };
 /** Processing order PWE uses when assembling the master .tmp */
 exports.CSB_PROCESSING_ORDER = [
-    'Predefined', 'Global', 'Application',
-    'Customer', 'Site',
-    'WorkSpace', 'WorkSet', 'Discipline',
-    'Role', 'User',
+    "Predefined",
+    "Global",
+    "Application",
+    "Customer",
+    "Site",
+    "WorkSpace",
+    "WorkSet",
+    "Discipline",
+    "Role",
+    "User",
 ];
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Entry Point
@@ -144,8 +150,14 @@ exports.CSB_PROCESSING_ORDER = [
  * variable tree exactly as MicroStation would.
  */
 async function extractManagedWorkspace(conn, ctx, client) {
+<<<<<<< HEAD
     let workDir = ctx.workDir ?? '';
     let wsDir = '';
+=======
+    const workDir = ctx.workDir ?? path.join(os.tmpdir(), `pw-managed-ws-${Date.now()}`);
+    const wsDir = path.join(workDir, "workspace");
+    fs.mkdirSync(wsDir, { recursive: true });
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
     const messages = [];
     const dmsPathMap = {};
     const pwFolderMetaByPath = new Map();
@@ -177,10 +189,17 @@ async function extractManagedWorkspace(conn, ctx, client) {
     };
     // ── Step 1: Fetch CSBs ────────────────────────────────────────────────────
     let csbs = null;
-    let backend = 'manual';
+    let backend = "manual";
     if (isPowerShellPwModuleAvailable()) {
+<<<<<<< HEAD
         reportProgress('Connecting to ProjectWise PowerShell module...');
         messages.push({ level: 'info', text: 'Backend A: ProjectWise PowerShell module (pwps_dab)' });
+=======
+        messages.push({
+            level: "info",
+            text: "Backend A: ProjectWise PowerShell module (pwps_dab)",
+        });
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
         try {
             const result = await readCsbsViaPwModule(conn, ctx);
             csbs = result.csbs;
@@ -190,50 +209,70 @@ async function extractManagedWorkspace(conn, ctx, client) {
             }
             if (result.pwWorkingDir) {
                 pwWorkingDir = result.pwWorkingDir;
-                messages.push({ level: 'info', text: `PW working directory: ${pwWorkingDir}` });
+                messages.push({
+                    level: "info",
+                    text: `PW working directory: ${pwWorkingDir}`,
+                });
             }
-            backend = 'powershell-pwmodule';
-            messages.push({ level: 'info', text: `Read ${csbs.length} CSBs via PW module` });
+            backend = "powershell-pwmodule";
+            messages.push({
+                level: "info",
+                text: `Read ${csbs.length} CSBs via PW module`,
+            });
         }
         catch (e) {
-            messages.push({ level: 'warning', text: `PW module failed: ${e}` });
+            messages.push({ level: "warning", text: `PW module failed: ${e}` });
         }
     }
     if (!csbs && isDmscliAvailable()) {
+<<<<<<< HEAD
         reportProgress('Falling back to ProjectWise native client API...');
         messages.push({ level: 'info', text: 'Backend B: dmscli.dll P/Invoke' });
+=======
+        messages.push({ level: "info", text: "Backend B: dmscli.dll P/Invoke" });
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
         try {
             csbs = await readCsbsViaDmscli(conn, ctx);
-            backend = 'powershell-dmscli';
-            messages.push({ level: 'info', text: `Read ${csbs.length} CSBs via dmscli` });
+            backend = "powershell-dmscli";
+            messages.push({
+                level: "info",
+                text: `Read ${csbs.length} CSBs via dmscli`,
+            });
         }
         catch (e) {
-            messages.push({ level: 'warning', text: `dmscli failed: ${e}` });
+            messages.push({ level: "warning", text: `dmscli failed: ${e}` });
         }
     }
     if (!csbs) {
+<<<<<<< HEAD
         reportProgress('Falling back to ProjectWise WSG document search...');
         messages.push({ level: 'info', text: 'Backend C: WSG document search' });
+=======
+        messages.push({ level: "info", text: "Backend C: WSG document search" });
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
         try {
             csbs = await readCsbsViaWsg(client, ctx);
-            backend = 'wsg-documents';
-            messages.push({ level: 'info', text: `Found ${csbs.length} CSB document(s) via WSG` });
+            backend = "wsg-documents";
+            messages.push({
+                level: "info",
+                text: `Found ${csbs.length} CSB document(s) via WSG`,
+            });
         }
         catch (e) {
-            messages.push({ level: 'warning', text: `WSG search failed: ${e}` });
+            messages.push({ level: "warning", text: `WSG search failed: ${e}` });
         }
     }
     if (!csbs || csbs.length === 0) {
         messages.push({
-            level: 'error',
-            text: 'Could not read CSBs automatically. Managed Workspace extraction requires one of:\n' +
-                '  • ProjectWise Explorer client installed (provides dmscli.dll + PW PowerShell module)\n' +
-                '  • CSBs stored as .cfg documents in the PW repository (WSG backend)\n' +
+            level: "error",
+            text: "Could not read CSBs automatically. Managed Workspace extraction requires one of:\n" +
+                "  • ProjectWise Explorer client installed (provides dmscli.dll + PW PowerShell module)\n" +
+                "  • CSBs stored as .cfg documents in the PW repository (WSG backend)\n" +
                 '  • Use "Manual CSB Import" to paste CSB content directly\n' +
-                'Falling back to pure CFG file download from the PW repository.',
+                "Falling back to pure CFG file download from the PW repository.",
         });
         csbs = [];
-        backend = 'manual';
+        backend = "manual";
     }
     // ── Step 2: Sort into processing order ────────────────────────────────────
     reportProgress('Ordering configuration blocks...');
@@ -278,19 +317,28 @@ async function extractManagedWorkspace(conn, ctx, client) {
     // ── Step 3: Derive workspace / workset names ──────────────────────────────
     // These must be known before writing the master .tmp so the cfg parser
     // can resolve _USTN_WORKSPACENAME / _USTN_WORKSETNAME.
-    const workspaceName = ctx.workspaceName ?? extractLastDirPiece(orderedCsbs, '_USTN_WORKSPACENAME');
-    const worksetName = ctx.worksetName ?? extractLastDirPiece(orderedCsbs, '_USTN_WORKSETNAME');
+    const workspaceName = ctx.workspaceName ??
+        extractLastDirPiece(orderedCsbs, "_USTN_WORKSPACENAME");
+    const worksetName = ctx.worksetName ?? extractLastDirPiece(orderedCsbs, "_USTN_WORKSETNAME");
     if (workspaceName)
-        messages.push({ level: 'info', text: `WorkspaceName: ${workspaceName}` });
+        messages.push({ level: "info", text: `WorkspaceName: ${workspaceName}` });
     if (worksetName)
-        messages.push({ level: 'info', text: `WorksetName: ${worksetName}` });
+        messages.push({ level: "info", text: `WorksetName: ${worksetName}` });
     // ── Step 4: Download PW folders into dms directories ─────────────────────
     reportProgress('Downloading initial ProjectWise configuration folders...');
     // First pass: _USTN_CONFIGURATION (primary configuration folder)
     const configRoot = extractConfigurationVariable(orderedCsbs);
     if (configRoot) {
+<<<<<<< HEAD
         messages.push({ level: 'info', text: `_USTN_CONFIGURATION: ${configRoot}` });
         await downloadPwFolderToDms(client, conn, pwFolderMetaByPath, configRoot, workDir, dmsPathMap, messages, undefined, undefined, reportProgress);
+=======
+        messages.push({
+            level: "info",
+            text: `_USTN_CONFIGURATION: ${configRoot}`,
+        });
+        await downloadPwFolderToDms(client, configRoot, workDir, dmsPathMap, messages);
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
     }
     // Second pass: any other PWFolder type variables not yet downloaded
     await downloadAdditionalPwFolders(client, conn, pwFolderMetaByPath, orderedCsbs, workDir, dmsPathMap, messages, reportProgress);
@@ -325,21 +373,40 @@ async function extractManagedWorkspace(conn, ctx, client) {
         }
         const cfgContent = csbToCfgContent(csb, workDir, dmsPathMap);
         const cfgPath = path.join(wsDir, `${csb.id}.cfg`);
-        fs.writeFileSync(cfgPath, cfgContent, 'utf8');
+        fs.writeFileSync(cfgPath, cfgContent, "utf8");
         messages.push({
-            level: 'info',
+            level: "info",
             text: `Wrote [${csb.level}] ${csb.name} (${csb.id}) → ${path.basename(cfgPath)}`,
         });
     }
     // ── Step 6: Write master .tmp ─────────────────────────────────────────────
     reportProgress('Writing master configuration file...');
     const masterTmpPath = path.join(wsDir, `${ctx.datasource}.tmp`);
+<<<<<<< HEAD
     const masterContent = buildMasterTmp(orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceName, worksetName, pwWorkingDir, selectedFolderLocalDir);
     fs.writeFileSync(masterTmpPath, masterContent, 'utf8');
     messages.push({ level: 'info', text: `Master config: ${path.basename(masterTmpPath)}` });
     return {
         masterTmpPath, workDir, csbs: orderedCsbs, dmsPathMap,
         workspaceName, worksetName, messages, backend, pwWorkingDir, selectedFolderLocalDir,
+=======
+    const masterContent = buildMasterTmp(orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceName, worksetName, pwWorkingDir);
+    fs.writeFileSync(masterTmpPath, masterContent, "utf8");
+    messages.push({
+        level: "info",
+        text: `Master config: ${path.basename(masterTmpPath)}`,
+    });
+    return {
+        masterTmpPath,
+        workDir,
+        csbs: orderedCsbs,
+        dmsPathMap,
+        workspaceName,
+        worksetName,
+        messages,
+        backend,
+        pwWorkingDir,
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
     };
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -356,13 +423,13 @@ async function extractManagedWorkspace(conn, ctx, client) {
  */
 async function listPwApplications(client) {
     try {
-        const data = await client.get('/Application');
+        const data = await client.get("/Application");
         return (data.instances ?? []).map((inst) => {
             const p = inst.properties ?? {};
             return {
-                instanceId: inst.instanceId ?? '',
+                instanceId: inst.instanceId ?? "",
                 name: p.Name ?? p.Label ?? inst.instanceId,
-                description: p.Description ?? '',
+                description: p.Description ?? "",
                 managedWorkspaceProfileId: p.ManagedWorkspaceProfileId ?? p.WorkspaceProfileId ?? undefined,
                 managedWorkspaceProfileName: p.ManagedWorkspaceProfileName ?? undefined,
             };
@@ -391,7 +458,7 @@ async function getApplicationForFolder(client, folderGuid) {
         return {
             instanceId: appId,
             name: ap.Name ?? ap.Label ?? appId,
-            description: ap.Description ?? '',
+            description: ap.Description ?? "",
             managedWorkspaceProfileId: ap.ManagedWorkspaceProfileId ?? undefined,
             managedWorkspaceProfileName: ap.ManagedWorkspaceProfileName ?? undefined,
         };
@@ -416,15 +483,17 @@ async function getApplicationForFolder(client, folderGuid) {
 //   See https://powerwisescripting.blog/ for the latest cmdlet documentation.
 // ─────────────────────────────────────────────────────────────────────────────
 function detectPowerShellPwModule() {
-    if (process.platform !== 'win32')
+    if (process.platform !== "win32")
         return null;
     try {
-        const result = (0, child_process_1.spawnSync)('powershell.exe', [
-            '-NoProfile', '-NonInteractive', '-Command',
+        const result = (0, child_process_1.spawnSync)("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
             // Prefer PWPS_DAB (64-bit, actively maintained) over the legacy ProjectWise module
-            '$m = Get-Module -ListAvailable -Name PWPS_DAB,ProjectWise | Select-Object -First 1 -ExpandProperty Name; if ($m) { $m }',
+            "$m = Get-Module -ListAvailable -Name PWPS_DAB,ProjectWise | Select-Object -First 1 -ExpandProperty Name; if ($m) { $m }",
         ], { timeout: 8000 });
-        const moduleName = (result.stdout?.toString() ?? '').trim();
+        const moduleName = (result.stdout?.toString() ?? "").trim();
         return moduleName || null;
     }
     catch {
@@ -710,7 +779,7 @@ $projectId = 0
 async function readCsbsViaPwModule(conn, ctx) {
     const moduleName = detectPowerShellPwModule();
     if (!moduleName) {
-        throw new Error('Neither PWPS_DAB nor ProjectWise PowerShell module is available.');
+        throw new Error("Neither PWPS_DAB nor ProjectWise PowerShell module is available.");
     }
     if (!ctx.folderGuid) {
         throw new Error('PW module backend now requires a folder GUID (ctx.folderGuid).');
@@ -1162,6 +1231,7 @@ if ($result.Count -eq 0 -and $workspaces.Count -gt 0) {
 } | ConvertTo-Json -Depth 10
 `;
     const tempScript = path.join(os.tmpdir(), `pw-csb-mod-${Date.now()}.ps1`);
+<<<<<<< HEAD
     fs.writeFileSync(tempScript, script, 'utf8');
     let out = '';
     let err = '';
@@ -1199,6 +1269,41 @@ if ($result.Count -eq 0 -and $workspaces.Count -gt 0) {
         if (status !== 0 && !err.trim() && !out.trim()) {
             throw new Error(`PowerShell module script exited with code ${status} and produced no output.`);
         }
+=======
+    fs.writeFileSync(tempScript, script, "utf8");
+    try {
+        const serverHostname = (() => {
+            try {
+                return new URL(conn.wsgUrl).hostname;
+            }
+            catch {
+                return conn.wsgUrl;
+            }
+        })();
+        const result = (0, child_process_1.spawnSync)("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            tempScript,
+            "-Server",
+            serverHostname,
+            "-Datasource",
+            conn.datasource,
+            "-Username",
+            conn.username,
+            "-Password",
+            conn.credential,
+            ...(ctx.applicationInstanceId
+                ? ["-ApplicationId", ctx.applicationInstanceId]
+                : []),
+            ...(ctx.folderGuid ? ["-FolderGuid", ctx.folderGuid] : []),
+            ...(ctx.documentGuid ? ["-DocumentGuid", ctx.documentGuid] : []),
+        ], { timeout: 45000, maxBuffer: 10 * 1024 * 1024 });
+        const out = result.stdout?.toString() ?? "";
+        const err = result.stderr?.toString() ?? "";
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
         if (err.trim()) {
             // stderr carries diagnostic messages written by the script (not fatal errors)
             // Surface them to the caller via a thrown error only if stdout is also empty.
@@ -1207,7 +1312,7 @@ if ($result.Count -eq 0 -and $workspaces.Count -gt 0) {
             }
         }
         if (!out.trim()) {
-            throw new Error(err || 'No output from PowerShell module script');
+            throw new Error(err || "No output from PowerShell module script");
         }
         return parsePowerShellCsbJson(out);
     }
@@ -1242,7 +1347,9 @@ if ($result.Count -eq 0 -and $workspaces.Count -gt 0) {
         try {
             fs.unlinkSync(tempScript);
         }
-        catch { /* ignore */ }
+        catch {
+            /* ignore */
+        }
     }
 }
 /** Thin wrapper that discards the working-dir half — used by backends that don't return it. */
@@ -1253,37 +1360,45 @@ function parsePowerShellCsbJsonCsbsOnly(json) {
 // Backend B: dmscli.dll P/Invoke
 // ─────────────────────────────────────────────────────────────────────────────
 function isDmscliAvailable() {
-    if (process.platform !== 'win32')
+    if (process.platform !== "win32")
         return false;
     return getDmscliPath() !== null;
 }
 function getDmscliPath() {
     const candidates = [
-        'C:/Program Files/Bentley/ProjectWise/bin/dmscli.dll',
-        'C:/Program Files (x86)/Bentley/ProjectWise/bin/dmscli.dll',
-        ...(process.env.PWDIR ? [path.join(process.env.PWDIR, 'bin/dmscli.dll')] : []),
+        "C:/Program Files/Bentley/ProjectWise/bin/dmscli.dll",
+        "C:/Program Files (x86)/Bentley/ProjectWise/bin/dmscli.dll",
+        ...(process.env.PWDIR
+            ? [path.join(process.env.PWDIR, "bin/dmscli.dll")]
+            : []),
     ];
-    return candidates.find(p => fs.existsSync(p)) ?? null;
+    return candidates.find((p) => fs.existsSync(p)) ?? null;
 }
 async function readCsbsViaDmscli(conn, ctx) {
     const dmscliPath = getDmscliPath();
-    const serverHost = (() => { try {
-        return new URL(conn.wsgUrl).hostname;
-    }
-    catch {
-        return conn.wsgUrl;
-    } })();
+    const serverHost = (() => {
+        try {
+            return new URL(conn.wsgUrl).hostname;
+        }
+        catch {
+            return conn.wsgUrl;
+        }
+    })();
     const script = buildDmscliScript(conn, ctx, dmscliPath, serverHost);
     const tempScript = path.join(os.tmpdir(), `pw-dmscli-${Date.now()}.ps1`);
-    fs.writeFileSync(tempScript, script, 'utf8');
+    fs.writeFileSync(tempScript, script, "utf8");
     try {
-        const result = (0, child_process_1.spawnSync)('powershell.exe', [
-            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-            '-File', tempScript,
+        const result = (0, child_process_1.spawnSync)("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            tempScript,
         ], { timeout: 60000, maxBuffer: 20 * 1024 * 1024 });
-        const out = result.stdout?.toString() ?? '';
+        const out = result.stdout?.toString() ?? "";
         if (result.status !== 0 || !out.trim()) {
-            throw new Error(result.stderr?.toString() || 'dmscli script produced no output');
+            throw new Error(result.stderr?.toString() || "dmscli script produced no output");
         }
         return parsePowerShellCsbJsonCsbsOnly(out);
     }
@@ -1291,12 +1406,14 @@ async function readCsbsViaDmscli(conn, ctx) {
         try {
             fs.unlinkSync(tempScript);
         }
-        catch { /* ignore */ }
+        catch {
+            /* ignore */
+        }
     }
 }
 function buildDmscliScript(conn, ctx, dmscliPath, serverHost) {
     // Escape backslashes for the embedded C# string literal
-    const dllPath = dmscliPath.replace(/\\/g, '\\\\');
+    const dllPath = dmscliPath.replace(/\\/g, "\\\\");
     return `
 # dmscli.dll P/Invoke — reads Managed Workspace CSBs from ProjectWise
 #
@@ -1466,7 +1583,8 @@ try {
   # ── Application-level CSBs (Predefined → WorkSpace) ──────────────────────
   # The Managed Workspace Profile is assigned to the Application. This gives us
   # all global/predefined/workspace-level CSBs.
-${ctx.applicationInstanceId ? `
+${ctx.applicationInstanceId
+        ? `
   $appId = [int]"${ctx.applicationInstanceId}"
   $wsBuf = [DmsCli]::aaApi_SelectManagedWorkspacesByApplication($appId)
   $wsCount = if ($wsBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_GetBufferItemCount($wsBuf) } else { 0 }
@@ -1477,12 +1595,14 @@ ${ctx.applicationInstanceId ? `
     }
   }
   if ($wsBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_FreeBuffer($wsBuf) | Out-Null }
-` : `  # applicationInstanceId not provided — skipping Application-level CSBs`}
+`
+        : `  # applicationInstanceId not provided — skipping Application-level CSBs`}
 
   # ── Document-derived folder CSBs ──────────────────────────────────────────
   # If a document GUID was provided (user selected a document in the extension),
   # resolve it to its parent folder's numeric project ID, then fetch WorkSet CSBs.
-${ctx.documentGuid ? `
+${ctx.documentGuid
+        ? `
   $docProjId = Get-ProjectIdFromDocument "${ctx.documentGuid}"
   if ($docProjId -gt 0) {
     $docWsBuf = [DmsCli]::aaApi_SelectManagedWorkspacesByProject($docProjId)
@@ -1495,13 +1615,15 @@ ${ctx.documentGuid ? `
     }
     if ($docWsBuf -ne [IntPtr]::Zero) { [DmsCli]::aaApi_FreeBuffer($docWsBuf) | Out-Null }
   }
-` : `  # documentGuid not provided — skipping document-derived folder CSBs`}
+`
+        : `  # documentGuid not provided — skipping document-derived folder CSBs`}
 
   # ── Folder-assigned CSBs (WorkSet / Discipline level) ────────────────────
   # CSBs can be assigned directly to a PW Work Area (folder) in PW Administrator.
   # aaApi_SelectManagedWorkspacesByProject requires a numeric project ID.
   # We resolve the GUID via aaApi_SelectProjectByGuid (added in PW SDK).
-${ctx.folderGuid ? `
+${ctx.folderGuid
+        ? `
   $numericProjId = Get-ProjectNumericId "${ctx.folderGuid}"
   if ($numericProjId -gt 0) {
     $projWsBuf = [DmsCli]::aaApi_SelectManagedWorkspacesByProject($numericProjId)
@@ -1516,7 +1638,8 @@ ${ctx.folderGuid ? `
   } else {
     [Console]::Error.WriteLine("Could not resolve folderGuid '${ctx.folderGuid}' to a numeric project ID via aaApi_SelectProjectByGuid")
   }
-` : `  # folderGuid not provided — skipping folder-assigned CSBs`}
+`
+        : `  # folderGuid not provided — skipping folder-assigned CSBs`}
 
 } finally {
   [DmsCli]::aaApi_Logout() | Out-Null
@@ -1579,7 +1702,7 @@ async function downloadPwFolderToDms(client, conn, pwFolderMetaByPath, pwLogical
         let folder = await matchedFolder;
         if (!folder) {
             messages.push({
-                level: 'warning',
+                level: "warning",
                 text: `Could not locate PW folder "${pwLogicalPath}" in repository.`,
             });
             return null;
@@ -1626,6 +1749,7 @@ async function downloadPwFolderToDms(client, conn, pwFolderMetaByPath, pwLogical
                 : '');
         // Fallback if Code isn't available (or doesn't match dms#### pattern)
         const dmsIndex = Object.keys(dmsPathMap).length;
+<<<<<<< HEAD
         let dmsDirName = preferredDmsDirName || `dms${String(dmsIndex).padStart(5, '0')}`;
         // Avoid collisions with an existing different PW folder mapping
         const collides = Object.values(dmsPathMap).some(entry => path.basename(entry.dmsDir).toLowerCase() === dmsDirName.toLowerCase() &&
@@ -1633,6 +1757,9 @@ async function downloadPwFolderToDms(client, conn, pwFolderMetaByPath, pwLogical
         if (collides) {
             dmsDirName = `dms${String(dmsIndex).padStart(5, '0')}`;
         }
+=======
+        const dmsDirName = `dms${String(dmsIndex).padStart(5, "0")}`;
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
         const dmsDir = path.join(workDir, dmsDirName);
         fs.mkdirSync(dmsDir, { recursive: true });
         dmsPathMap[folder.instanceId] = {
@@ -1668,18 +1795,26 @@ async function downloadPwFolderToDms(client, conn, pwFolderMetaByPath, pwLogical
             }
         }
         for (const { pwPath, content } of cfgFiles) {
+<<<<<<< HEAD
             const localPath = path.join(dmsDir, path.basename(pwPath));
+=======
+            const relPath = pwPath.replace(/^[/\\]+/, "");
+            const localPath = path.join(dmsDir, ...relPath.split(/[/\\]/));
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
             fs.mkdirSync(path.dirname(localPath), { recursive: true });
-            fs.writeFileSync(localPath, content, 'utf8');
+            fs.writeFileSync(localPath, content, "utf8");
         }
         messages.push({
-            level: 'info',
+            level: "info",
             text: `Downloaded ${cfgFiles.length} file(s) from "${pwLogicalPath}" → ${dmsDirName}/`,
         });
         return dmsDir;
     }
     catch (e) {
-        messages.push({ level: 'warning', text: `Failed to download PW folder "${pwLogicalPath}": ${e}` });
+        messages.push({
+            level: "warning",
+            text: `Failed to download PW folder "${pwLogicalPath}": ${e}`,
+        });
         return null;
     }
 }
@@ -1687,12 +1822,21 @@ async function downloadPwFolderToDms(client, conn, pwFolderMetaByPath, pwLogical
  * Scan all CSBs for PWFolder type variables whose target folders have not
  * yet been downloaded, and download them into additional dms directories.
  */
+<<<<<<< HEAD
 async function downloadAdditionalPwFolders(client, conn, pwFolderMetaByPath, csbs, workDir, dmsPathMap, messages, reportProgress) {
     const seenPaths = new Set(Object.values(dmsPathMap).map(e => normalisePwPathForLookup(e.pwLogicalPath)));
     for (const csb of csbs) {
         for (const v of csb.variables) {
             if (v.valueType === 'PWFolder' && v.value) {
                 const normalised = normalisePwPathForLookup(v.value);
+=======
+async function downloadAdditionalPwFolders(client, csbs, workDir, dmsPathMap, messages) {
+    const seenPaths = new Set(Object.values(dmsPathMap).map((e) => e.pwLogicalPath.toLowerCase()));
+    for (const csb of csbs) {
+        for (const v of csb.variables) {
+            if (v.valueType === "PWFolder" && v.value) {
+                const normalised = v.value.toLowerCase();
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
                 if (!seenPaths.has(normalised)) {
                     seenPaths.add(normalised);
                     await downloadPwFolderToDms(client, conn, pwFolderMetaByPath, v.value, workDir, dmsPathMap, messages, undefined, undefined, reportProgress);
@@ -1715,14 +1859,22 @@ async function downloadAdditionalPwFolders(client, conn, pwFolderMetaByPath, csb
  */
 async function findFolderByPath(client, logicalPath, rootFolders) {
     // Strip the @: datasource-root prefix (PW logical path root marker)
+<<<<<<< HEAD
     const stripped = toPwLogicalPath(logicalPath).replace(/^@:[/\\]*/i, '').replace(/^[/\\]+/, '').replace(/[/\\]+$/, '');
+=======
+    const stripped = logicalPath
+        .replace(/^@:[/\\]*/i, "")
+        .replace(/^[/\\]+/, "")
+        .replace(/[/\\]+$/, "");
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
     const segments = stripped.split(/[/\\]/).filter(Boolean);
     if (segments.length === 0)
         return null;
     let currentLevel = rootFolders;
     let found = null;
     for (let i = 0; i < segments.length; i++) {
-        found = currentLevel.find(f => f.name.toLowerCase() === segments[i].toLowerCase()) ?? null;
+        found =
+            currentLevel.find((f) => f.name.toLowerCase() === segments[i].toLowerCase()) ?? null;
         if (!found)
             return null;
         if (i < segments.length - 1) {
@@ -1747,9 +1899,15 @@ async function findFolderByPath(client, logicalPath, rootFolders) {
  * Also scans Literal-type CSB variable values for @: paths that should be
  * downloaded (e.g. literal _USTN_CONFIGURATION assignments using @: syntax).
  */
+<<<<<<< HEAD
 async function resolveAtPathsRecursively(client, conn, pwFolderMetaByPath, csbs, workDir, dmsPathMap, messages, reportProgress) {
     const seenPwFolders = new Set(Object.values(dmsPathMap).map(e => normaliseAtPath(e.pwLogicalPath)));
     const variableContext = buildIncludeVariableContext(csbs);
+=======
+async function resolveAtPathsRecursively(client, csbs, workDir, dmsPathMap, messages) {
+    const seenPaths = new Set(Object.values(dmsPathMap).map((e) => normaliseAtPath(e.pwLogicalPath)));
+    // Collect @: paths from Literal CSB variable values
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
     const pending = [];
     const enqueue = (pwFolderPath, cfgNameLike) => {
         const key = normaliseAtPath(pwFolderPath);
@@ -1782,7 +1940,12 @@ async function resolveAtPathsRecursively(client, conn, pwFolderMetaByPath, csbs,
         batch = Object.values(dmsPathMap).map(entry => ({ pwFolderPath: entry.pwLogicalPath }));
     }
     let pass = 0;
+<<<<<<< HEAD
     while (batch.length > 0 && pass < 20) {
+=======
+    while (batch.length > 0 && pass < 10) {
+        // safety limit
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
         pass++;
         reportProgress?.(`Scanning downloaded cfg files for nested includes (pass ${pass})...`);
         const nextBatch = [];
@@ -1794,24 +1957,45 @@ async function resolveAtPathsRecursively(client, conn, pwFolderMetaByPath, csbs,
                 if (!/\.(cfg|ucf|pcf)$/i.test(file))
                     continue;
                 try {
+<<<<<<< HEAD
                     const content = fs.readFileSync(file, 'utf8');
                     for (const target of extractPwTargetsFromCfgContent(content, variableContext, dmsPathMap)) {
                         const key = normaliseAtPath(target.folderPath);
                         if (!seenPwFolders.has(key)) {
                             seenPwFolders.add(key);
                             nextBatch.push({ pwFolderPath: target.folderPath, cfgNameLike: target.cfgNameLike });
+=======
+                    const content = fs.readFileSync(file, "utf8");
+                    for (const atPath of extractAtPathsFromCfg(content)) {
+                        const n = normaliseAtPath(atPath);
+                        if (!seenPaths.has(n)) {
+                            seenPaths.add(n);
+                            nextBatch.push(atPath);
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
                         }
                     }
                 }
                 catch {
+<<<<<<< HEAD
                     // ignore unreadable file and continue recursion
+=======
+                    /* unreadable file — skip */
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
                 }
             }
         }
         batch = nextBatch;
     }
+<<<<<<< HEAD
     if (pass >= 20) {
         messages.push({ level: 'warning', text: 'Stopped %include recursion after 20 passes (possible cycle).' });
+=======
+    if (pass >= 10) {
+        messages.push({
+            level: "warning",
+            text: "Stopped @: path resolution after 10 passes (possible cycle).",
+        });
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
     }
 }
 /** Returns true if a value string is a ProjectWise folder reference. */
@@ -1820,7 +2004,15 @@ function isAtPath(value) {
 }
 /** Normalises a PW logical path for deduplication (lowercase, forward slashes, no trailing slash). */
 function normaliseAtPath(p) {
+<<<<<<< HEAD
     return toPwLogicalPath(p).replace(/^@:[/\\]*/i, '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '').toLowerCase();
+=======
+    return p
+        .replace(/^@:[/\\]*/i, "")
+        .replace(/\\/g, "/")
+        .replace(/\/+$/, "")
+        .toLowerCase();
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
 }
 /**
  * Scan CFG file content for %include lines that reference @: paths.
@@ -1829,12 +2021,26 @@ function normaliseAtPath(p) {
 function extractIncludeExpressions(content) {
     const expressions = [];
     for (const line of content.split(/\r?\n/)) {
+<<<<<<< HEAD
         const stripped = line.replace(/#.*$/, '').trim();
         const m = stripped.match(/^%include\s+(.*?)(?:\s+level\s+\w+)?\s*$/i);
         if (m) {
             const expr = m[1].trim();
             if (expr)
                 expressions.push(expr);
+=======
+        const stripped = line.replace(/#.*$/, "").trim();
+        // %include @:\Some\Path\ or %include @:\Some\Path\*.cfg
+        const m = stripped.match(/^%include\s+(@:[/\\][^*?\s]*)/i);
+        if (m) {
+            // Reduce to the folder part (strip filename/wildcard at end)
+            const raw = m[1];
+            const folder = raw.includes("*") || raw.includes("?")
+                ? raw.replace(/[/\\][^/\\]*$/, "") // strip last segment (filename/glob)
+                : raw;
+            if (folder)
+                paths.push(folder);
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
         }
     }
     return [...new Set(expressions)];
@@ -2023,7 +2229,9 @@ function walkLocalDir(dir) {
                 results.push(full);
         }
     }
-    catch { /* ignore unreadable dirs */ }
+    catch {
+        /* ignore unreadable dirs */
+    }
     return results;
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2042,7 +2250,7 @@ function walkLocalDir(dir) {
  *  - No %include or %if directives (not supported in CSB content)
  */
 function csbToCfgContent(csb, workDir, dmsPathMap) {
-    const fwdWorkDir = workDir.replace(/\\/g, '/');
+    const fwdWorkDir = workDir.replace(/\\/g, "/");
     const lines = [
         `#----------------------------------------------------------------------`,
         `# CSB: ${csb.name}`,
@@ -2055,7 +2263,7 @@ function csbToCfgContent(csb, workDir, dmsPathMap) {
         ``,
     ];
     // PWE injects PW_WORKDIR variables at the very start of the Predefined CSB
-    if (csb.level === 'Predefined') {
+    if (csb.level === "Predefined") {
         lines.push(`PW_WORKDIR                   = ${fwdWorkDir}/`);
         lines.push(`PW_WORKDIR_WORKSPACE         = ${fwdWorkDir}/workspace/`);
         lines.push(`PW_MANAGEDWORKSPACE_WORKDIR  = ${fwdWorkDir}/`);
@@ -2074,8 +2282,8 @@ function csbToCfgContent(csb, workDir, dmsPathMap) {
         if (v.locked)
             lines.push(`%lock ${v.name}`);
     }
-    lines.push('');
-    return lines.join('\n');
+    lines.push("");
+    return lines.join("\n");
 }
 /**
  * Normalise a PW logical path for use as a lookup key.
@@ -2104,8 +2312,9 @@ function normalisePwPathForLookup(p) {
  * Resolve a CSB variable value based on its ValueType.
  */
 function resolveValueType(v, workDir, dmsPathMap) {
-    const fwdWorkDir = workDir.replace(/\\/g, '/');
+    const fwdWorkDir = workDir.replace(/\\/g, "/");
     switch (v.valueType) {
+<<<<<<< HEAD
         case 'Literal': {
             // If the literal value is a PW logical path (@:\...) it should resolve
             // to the same local dmsNNNNN/ directory as a PWFolder-typed variable
@@ -2135,8 +2344,16 @@ function resolveValueType(v, workDir, dmsPathMap) {
             // @:\Config\, \Config\, @:/Config/, /Config/ all resolve to the same entry.
             const normVal = normalisePwPathForLookup(v.value);
             const entry = Object.values(dmsPathMap).find(e => normalisePwPathForLookup(e.pwLogicalPath) === normVal);
+=======
+        case "Literal":
+            return v.value;
+        case "PWFolder": {
+            // Look up in dmsPathMap by pwLogicalPath (case-insensitive)
+            const entry = Object.values(dmsPathMap).find((e) => e.pwLogicalPath.replace(/[/\\]+$/, "").toLowerCase() ===
+                v.value.replace(/[/\\]+$/, "").toLowerCase());
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
             if (entry) {
-                return entry.dmsDir.replace(/\\/g, '/') + '/';
+                return entry.dmsDir.replace(/\\/g, "/") + "/";
             }
             const code = (v.folderCode ?? '').trim().toLowerCase();
             if (/^dms\d+$/i.test(code)) {
@@ -2148,18 +2365,28 @@ function resolveValueType(v, workDir, dmsPathMap) {
             }
             // Not yet downloaded — emit an approximate path with a placeholder dms dir.
             // The cfg parser will flag the unresolved path.
+<<<<<<< HEAD
             const folderName = v.value.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || 'unknown';
+=======
+            const folderName = v.value
+                .replace(/[/\\]+$/, "")
+                .split(/[/\\]/)
+                .pop() ?? "unknown";
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
             return `${fwdWorkDir}/dms00000/${folderName}/`;
         }
-        case 'dms_project':
+        case "dms_project":
             // The document's working-copy directory.
             // Approximated as PW_WORKDIR; would need the document GUID to be precise.
             return `${fwdWorkDir}/`;
-        case 'LastDirPiece':
+        case "LastDirPiece":
             // Extract the last segment of the PW folder path.
             // Used for _USTN_WORKSPACENAME, _USTN_WORKSETNAME etc.
             if (v.value) {
-                return v.value.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ?? v.value;
+                return (v.value
+                    .replace(/[/\\]+$/, "")
+                    .split(/[/\\]/)
+                    .pop() ?? v.value);
             }
             return v.value;
         default:
@@ -2187,14 +2414,14 @@ function buildMasterTmp(orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceN
     // This is the local folder where ProjectWise copies out checked-out files, and is
     // what PWE seeds as PW_WORKDIR. Fall back to the temp work directory otherwise.
     const effectiveWorkDir = pwWorkingDir ?? workDir;
-    const fwdWorkDir = effectiveWorkDir.replace(/\\/g, '/');
-    const fwdWsDir = wsDir.replace(/\\/g, '/');
+    const fwdWorkDir = effectiveWorkDir.replace(/\\/g, "/");
+    const fwdWsDir = wsDir.replace(/\\/g, "/");
     const lines = [
         `#----------------------------------------------------------------------`,
         `# ProjectWise Managed Workspace Master Configuration`,
         `# Datasource : ${ctx.datasource}`,
-        `# Application: ${ctx.applicationInstanceId ?? '(not specified)'}`,
-        `# Folder     : ${ctx.folderGuid ?? '(not specified)'}`,
+        `# Application: ${ctx.applicationInstanceId ?? "(not specified)"}`,
+        `# Folder     : ${ctx.folderGuid ?? "(not specified)"}`,
         `# Generated  : ${new Date().toISOString()}`,
         `#`,
         `# Equivalent to the .tmp file written by ProjectWise Explorer.`,
@@ -2213,7 +2440,7 @@ function buildMasterTmp(orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceN
         lines.push(`# ── PW folder → local dms directory mapping ────────────────────────`);
         for (const [guid, entry] of dmsEntries) {
             lines.push(`# "${entry.pwLogicalPath}" (GUID: ${guid})`);
-            lines.push(`#   → ${entry.dmsDir.replace(/\\/g, '/')}/`);
+            lines.push(`#   → ${entry.dmsDir.replace(/\\/g, "/")}/`);
         }
         lines.push(``);
     }
@@ -2242,12 +2469,13 @@ function buildMasterTmp(orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceN
             lines.push(`# %level ${msLevel}: ${csb.level}`);
             lastLevel = msLevel;
         }
-        const cfgPath = path.join(wsDir, `${csb.id}.cfg`).replace(/\\/g, '/');
+        const cfgPath = path.join(wsDir, `${csb.id}.cfg`).replace(/\\/g, "/");
         lines.push(`%include ${cfgPath}`);
         // PW_MANAGEDWORKSPACE accumulates the database ID of every processed CSB.
         // MicroStation/ORD checks for this variable to confirm Managed Workspace mode.
         lines.push(`PW_MANAGEDWORKSPACE > ${csb.id}`);
     }
+<<<<<<< HEAD
     // ── Configuration files from downloaded PW folders ─────────────────────
     // Each dms directory contains cfg/ucf/pcf files downloaded from a PW folder.
     // In real PWE, MicroStation's system configuration uses the variable that
@@ -2296,6 +2524,10 @@ function buildMasterTmp(orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceN
     }
     lines.push('');
     return lines.join('\n');
+=======
+    lines.push("");
+    return lines.join("\n");
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
 }
 // ─────────────────────────────────────────────────────────────────────────────
 // Manual CSB import
@@ -2308,7 +2540,7 @@ function parseManualCsbInput(input, level, name, id = 9999) {
     return {
         id,
         name,
-        description: 'Manually imported',
+        description: "Manually imported",
         level,
         variables: parseCfgAsCsb(input),
         linkedCsbIds: [],
@@ -2320,7 +2552,7 @@ function parseManualCsbInput(input, level, name, id = 9999) {
 function orderCsbs(csbs) {
     // Deduplicate by ID (Application and folder reads can produce duplicates)
     const seen = new Set();
-    const unique = csbs.filter(c => {
+    const unique = csbs.filter((c) => {
         if (seen.has(c.id))
             return false;
         seen.add(c.id);
@@ -2343,7 +2575,7 @@ function orderCsbs(csbs) {
  */
 function extractConfigurationVariable(csbs) {
     for (const csb of csbs) {
-        const v = csb.variables.find(v => v.name === '_USTN_CONFIGURATION');
+        const v = csb.variables.find((v) => v.name === "_USTN_CONFIGURATION");
         if (v?.value)
             return v.value;
     }
@@ -2358,11 +2590,14 @@ function extractConfigurationVariable(csbs) {
  */
 function extractLastDirPiece(csbs, varName) {
     for (const csb of [...csbs].reverse()) {
-        const v = csb.variables.find(v => v.name === varName);
+        const v = csb.variables.find((v) => v.name === varName);
         if (!v?.value)
             continue;
-        if (v.valueType === 'LastDirPiece') {
-            return v.value.replace(/[/\\]+$/, '').split(/[/\\]/).pop();
+        if (v.valueType === "LastDirPiece") {
+            return v.value
+                .replace(/[/\\]+$/, "")
+                .split(/[/\\]/)
+                .pop();
         }
         return v.value;
     }
@@ -2387,17 +2622,25 @@ function parsePowerShellCsbJson(json) {
     const raw = JSON.parse(clean);
     // Detect wrapper object format
     let csbArray;
+<<<<<<< HEAD
     let pwWorkingDir = '';
     let debug;
+=======
+    let pwWorkingDir = "";
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
     if (Array.isArray(raw)) {
         csbArray = raw;
     }
-    else if (raw && typeof raw === 'object' && (raw.Csbs ?? raw.csbs)) {
+    else if (raw && typeof raw === "object" && (raw.Csbs ?? raw.csbs)) {
         csbArray = raw.Csbs ?? raw.csbs ?? [];
+<<<<<<< HEAD
         pwWorkingDir = String(raw.WorkingDir ?? raw.workingDir ?? '');
         debug = Array.isArray(raw.Debug ?? raw.debug)
             ? (raw.Debug ?? raw.debug).map((v) => String(v))
             : undefined;
+=======
+        pwWorkingDir = String(raw.WorkingDir ?? raw.workingDir ?? "");
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
     }
     else {
         // Single CSB object
@@ -2405,11 +2648,27 @@ function parsePowerShellCsbJson(json) {
     }
     const csbs = csbArray.map((item) => ({
         id: Number(item.Id ?? item.id ?? 0),
+<<<<<<< HEAD
         name: String(item.Name ?? item.name ?? ''),
         description: String(item.Description ?? item.description ?? ''),
         level: normaliseCsbLevel(String(item.Level ?? item.level ?? 'Global')),
         variables: (item.Variables ?? item.variables ?? []).map((v) => parsePowerShellVariable(v)),
         linkedCsbIds: Array.isArray(item.LinkedIds) ? item.LinkedIds.map(Number) : [],
+=======
+        name: String(item.Name ?? item.name ?? ""),
+        description: String(item.Description ?? item.description ?? ""),
+        level: normaliseCsbLevel(String(item.Level ?? item.level ?? "Global")),
+        variables: (item.Variables ?? item.variables ?? []).map((v) => ({
+            name: String(v.Name ?? v.name ?? ""),
+            operator: normaliseOperator(String(v.Operator ?? v.operator ?? "=")),
+            value: String(v.Value ?? v.value ?? ""),
+            valueType: normaliseCsbValueType(String(v.ValueType ?? v.valueType ?? "Literal")),
+            locked: Boolean(v.Locked ?? v.locked ?? false),
+        })),
+        linkedCsbIds: Array.isArray(item.LinkedIds)
+            ? item.LinkedIds.map(Number)
+            : [],
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
     }));
     return { csbs, pwWorkingDir, debug };
 }
@@ -2436,19 +2695,19 @@ function extractJsonPayload(text) {
 function parseCfgAsCsb(content) {
     const vars = [];
     for (const rawLine of content.split(/\r?\n/)) {
-        const line = rawLine.replace(/#.*$/, '').trim();
+        const line = rawLine.replace(/#.*$/, "").trim();
         if (!line)
             continue;
         // %lock applies to the nearest preceding variable with that name
         const lockMatch = line.match(/^%lock\s+([A-Za-z_]\w*)/i);
         if (lockMatch) {
-            const last = [...vars].reverse().find(v => v.name === lockMatch[1]);
+            const last = [...vars].reverse().find((v) => v.name === lockMatch[1]);
             if (last)
                 last.locked = true;
             continue;
         }
         // Skip any preprocessor directives that may appear in .cfg files stored as CSBs
-        if (/^%(?:include|if|ifdef|ifndef|else|elseif|endif|define|undef|level|error|warning)\b/i.test(line)) {
+        if (/^%(?:include|if|ifdef|iffeature|ifndef|else|elseif|endif|define|undef|level|error|warning)\b/i.test(line)) {
             continue;
         }
         const m = line.match(/^([A-Za-z_][A-Za-z0-9_\-]*)\s*([=><:])\s*(.*)/);
@@ -2457,7 +2716,7 @@ function parseCfgAsCsb(content) {
                 name: m[1],
                 operator: normaliseOperator(m[2]),
                 value: m[3].trim(),
-                valueType: 'Literal',
+                valueType: "Literal",
                 locked: false,
             });
         }
@@ -2466,14 +2725,22 @@ function parseCfgAsCsb(content) {
 }
 function normaliseCsbLevel(level) {
     const map = {
-        predefined: 'Predefined', global: 'Global', application: 'Application',
-        customer: 'Customer', site: 'Site', workspace: 'WorkSpace',
-        workset: 'WorkSet', project: 'WorkSet', discipline: 'Discipline',
-        role: 'Role', user: 'User',
+        predefined: "Predefined",
+        global: "Global",
+        application: "Application",
+        customer: "Customer",
+        site: "Site",
+        workspace: "WorkSpace",
+        workset: "WorkSet",
+        project: "WorkSet",
+        discipline: "Discipline",
+        role: "Role",
+        user: "User",
     };
-    return map[level.toLowerCase()] ?? 'Global';
+    return map[level.toLowerCase()] ?? "Global";
 }
 function normaliseOperator(op) {
+<<<<<<< HEAD
     const normalised = op.trim().toLowerCase();
     if (normalised === 'assignment')
         return '=';
@@ -2484,11 +2751,15 @@ function normaliseOperator(op) {
     if (normalised === 'directive')
         return ':';
     return ['=', '>', '<', ':'].includes(op)
+=======
+    return ["=", ">", "<", ":"].includes(op)
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
         ? op
-        : '=';
+        : "=";
 }
 function normaliseCsbValueType(vt) {
     const map = {
+<<<<<<< HEAD
         string: 'Literal',
         literal: 'Literal',
         project: 'PWFolder',
@@ -2496,8 +2767,14 @@ function normaliseCsbValueType(vt) {
         pwfolder: 'PWFolder',
         dms_project: 'dms_project',
         lastdirpiece: 'LastDirPiece',
+=======
+        literal: "Literal",
+        pwfolder: "PWFolder",
+        dms_project: "dms_project",
+        lastdirpiece: "LastDirPiece",
+>>>>>>> b8be9e2 (Fix(minor): Add iffeature support)
     };
-    return map[vt.toLowerCase()] ?? 'Literal';
+    return map[vt.toLowerCase()] ?? "Literal";
 }
 function parsePowerShellVariable(v) {
     const valuesText = String(firstDefined(v, ['ValuesRaw', 'valuesRaw', 'Values', 'values', 'ValueSummary', 'valueSummary']) ?? '').trim();
@@ -2560,26 +2837,26 @@ function firstDefined(obj, names) {
 }
 function inferCsbLevelFromPath(pwPath) {
     const lower = pwPath.toLowerCase();
-    if (lower.includes('predefined'))
-        return 'Predefined';
-    if (lower.includes('global'))
-        return 'Global';
-    if (lower.includes('application'))
-        return 'Application';
-    if (lower.includes('customer'))
-        return 'Customer';
-    if (lower.includes('site'))
-        return 'Site';
-    if (lower.includes('workset') || lower.includes('project'))
-        return 'WorkSet';
-    if (lower.includes('workspace'))
-        return 'WorkSpace';
-    if (lower.includes('discipline'))
-        return 'Discipline';
-    if (lower.includes('role'))
-        return 'Role';
-    if (lower.includes('user'))
-        return 'User';
-    return 'Global';
+    if (lower.includes("predefined"))
+        return "Predefined";
+    if (lower.includes("global"))
+        return "Global";
+    if (lower.includes("application"))
+        return "Application";
+    if (lower.includes("customer"))
+        return "Customer";
+    if (lower.includes("site"))
+        return "Site";
+    if (lower.includes("workset") || lower.includes("project"))
+        return "WorkSet";
+    if (lower.includes("workspace"))
+        return "WorkSpace";
+    if (lower.includes("discipline"))
+        return "Discipline";
+    if (lower.includes("role"))
+        return "Role";
+    if (lower.includes("user"))
+        return "User";
+    return "Global";
 }
 //# sourceMappingURL=csbExtractor.js.map
