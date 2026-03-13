@@ -204,6 +204,9 @@ export interface ManagedWorkspaceContext {
    *     ...
    */
   workDir?: string;
+
+  /** Optional progress callback for long-running extraction steps. */
+  progress?: (message: string) => void;
 }
 
 /**
@@ -293,6 +296,9 @@ export async function extractManagedWorkspace(
   const pwFolderMetaByPath = new Map<string, PwFolderModuleMetadata>();
   let pwWorkingDir: string | undefined;
   let selectedFolderLocalDir: string | undefined;
+  const reportProgress = (message: string): void => {
+    try { ctx.progress?.(message); } catch { /* ignore UI callback failures */ }
+  };
 
   const logTrackedVariable = (stage: string, blocks: CsbBlock[]): void => {
     const tracked = blocks
@@ -321,6 +327,7 @@ export async function extractManagedWorkspace(
   let backend: CsbExtractionResult['backend'] = 'manual';
 
   if (isPowerShellPwModuleAvailable()) {
+    reportProgress('Connecting to ProjectWise PowerShell module...');
     messages.push({ level: 'info', text: 'Backend A: ProjectWise PowerShell module (pwps_dab)' });
     try {
       const result = await readCsbsViaPwModule(conn, ctx);
@@ -341,6 +348,7 @@ export async function extractManagedWorkspace(
   }
 
   if (!csbs && isDmscliAvailable()) {
+    reportProgress('Falling back to ProjectWise native client API...');
     messages.push({ level: 'info', text: 'Backend B: dmscli.dll P/Invoke' });
     try {
       csbs = await readCsbsViaDmscli(conn, ctx);
@@ -352,6 +360,7 @@ export async function extractManagedWorkspace(
   }
 
   if (!csbs) {
+    reportProgress('Falling back to ProjectWise WSG document search...');
     messages.push({ level: 'info', text: 'Backend C: WSG document search' });
     try {
       csbs = await readCsbsViaWsg(client, ctx);
@@ -377,10 +386,12 @@ export async function extractManagedWorkspace(
   }
 
   // ── Step 2: Sort into processing order ────────────────────────────────────
+  reportProgress('Ordering configuration blocks...');
   const orderedCsbs = orderCsbs(csbs);
   logTrackedVariable('After CSB ordering', orderedCsbs);
 
   if (backend === 'powershell-pwmodule') {
+    reportProgress('Resolving ProjectWise folder metadata...');
     // Collect all PW folder paths that need Get-PWFolders -FolderPath resolution:
     // - PWFolder-typed variables (explicit PW folder references)
     // - Literal-typed variables whose value starts with @: (same semantics,
@@ -422,21 +433,22 @@ export async function extractManagedWorkspace(
   if (worksetName)   messages.push({ level: 'info', text: `WorksetName: ${worksetName}` });
 
   // ── Step 4: Download PW folders into dms directories ─────────────────────
+  reportProgress('Downloading initial ProjectWise configuration folders...');
   // First pass: _USTN_CONFIGURATION (primary configuration folder)
   const configRoot = extractConfigurationVariable(orderedCsbs);
   if (configRoot) {
     messages.push({ level: 'info', text: `_USTN_CONFIGURATION: ${configRoot}` });
-    await downloadPwFolderToDms(client, conn, pwFolderMetaByPath, configRoot, workDir, dmsPathMap, messages);
+    await downloadPwFolderToDms(client, conn, pwFolderMetaByPath, configRoot, workDir, dmsPathMap, messages, undefined, undefined, reportProgress);
   }
 
   // Second pass: any other PWFolder type variables not yet downloaded
-  await downloadAdditionalPwFolders(client, conn, pwFolderMetaByPath, orderedCsbs, workDir, dmsPathMap, messages);
+  await downloadAdditionalPwFolders(client, conn, pwFolderMetaByPath, orderedCsbs, workDir, dmsPathMap, messages, reportProgress);
 
   // Third pass: scan Literal CSB values and downloaded CFG files for @: paths.
   // This resolves recursive include chains — e.g. a downloaded WorkSpace.cfg that
   // %includes @:\Configuration\Organization\*.cfg triggers a further download of
   // the Organization folder. Continues until no new @: paths are found (up to 10 passes).
-  await resolveAtPathsRecursively(client, conn, pwFolderMetaByPath, orderedCsbs, workDir, dmsPathMap, messages);
+  await resolveAtPathsRecursively(client, conn, pwFolderMetaByPath, orderedCsbs, workDir, dmsPathMap, messages, reportProgress);
 
   if (ctx.folderGuid) {
     const selectedFolderMeta = await resolvePwFolderByGuidViaPwModule(conn, ctx.folderGuid);
@@ -450,6 +462,7 @@ export async function extractManagedWorkspace(
   }
 
   // ── Step 5: Write {CsbID}.cfg files ───────────────────────────────────────
+  reportProgress('Writing extracted CSB files...');
   for (const csb of orderedCsbs) {
     const tracked = csb.variables.find(v => v.name === '_DYNAMIC_DATASOURCE_BENTLEYROOT');
     if (tracked) {
@@ -473,6 +486,7 @@ export async function extractManagedWorkspace(
   }
 
   // ── Step 6: Write master .tmp ─────────────────────────────────────────────
+  reportProgress('Writing master configuration file...');
   const masterTmpPath = path.join(wsDir, `${ctx.datasource}.tmp`);
   const masterContent = buildMasterTmp(
     orderedCsbs, wsDir, workDir, ctx, dmsPathMap, workspaceName, worksetName, pwWorkingDir, selectedFolderLocalDir
@@ -590,8 +604,19 @@ function getPwServerHostname(conn: PwConnection): string {
   return rawHost.replace(/-ws(?=\.|$)/i, '');
 }
 
+function toPwLogicalPath(input: string): string {
+  const candidate = (input ?? '').trim();
+  const match = candidate.match(/^pw:\/\/[^/]+\/Documents\/(.*)$/i);
+  if (!match) return candidate;
+
+  let tail = match[1] ?? '';
+  try { tail = decodeURIComponent(tail); } catch { /* keep raw tail */ }
+  tail = tail.replace(/\\/g, '/');
+  return `/${tail}`;
+}
+
 function normalisePwLogicalPathKey(p: string): string {
-  return p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '').toLowerCase();
+  return toPwLogicalPath(p).replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
 async function resolvePwFolderMetadataForPathViaPwModule(
@@ -599,7 +624,8 @@ async function resolvePwFolderMetadataForPathViaPwModule(
   pwPath: string
 ): Promise<PwFolderModuleMetadata | undefined> {
   const moduleName = detectPowerShellPwModule();
-  if (!moduleName || !pwPath.trim()) return undefined;
+  const logicalPwPath = toPwLogicalPath(pwPath);
+  if (!moduleName || !logicalPwPath.trim()) return undefined;
 
   const script = `
 param($ServerPart, $DatasourceName, $PwPath)
@@ -612,40 +638,40 @@ $ErrorActionPreference = 'Stop'
 try {
   Import-Module "${moduleName}" -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null | Out-Null
 } catch {
-  throw "Failed to import module '${moduleName}': \$(\$_.Exception.Message)"
+  throw "Failed to import module '${moduleName}': $($_.Exception.Message)"
 }
 
 $datasourceQualified = "$($ServerPart):$($DatasourceName)"
 $attempts = @($datasourceQualified)
 if ($DatasourceName -and $DatasourceName -notmatch ':') { $attempts += $DatasourceName }
 
-$loggedIn = \$false
+$loggedIn = $false
 $lastError = ''
 
 foreach ($attempt in ($attempts | Select-Object -Unique)) {
   try {
     New-PWLogin -BentleyIMS -DatasourceName $attempt -NonAdminLogin -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null | Out-Null
   } catch {
-    $lastError = \$_.Exception.Message
+    $lastError = $_.Exception.Message
     continue
   }
 
-  $currentDs = \$null
+  $currentDs = $null
   try {
     $currentDs = Get-PWCurrentDatasource -ErrorAction Stop -WarningAction SilentlyContinue 3>$null 4>$null 5>$null 6>$null
   } catch {
-    $lastError = "Get-PWCurrentDatasource failed: \$(\$_.Exception.Message)"
+    $lastError = "Get-PWCurrentDatasource failed: $($_.Exception.Message)"
     continue
   }
 
   if ($currentDs) {
-    $loggedIn = \$true
+    $loggedIn = $true
     break
   }
 }
 
 if (-not $loggedIn) {
-  throw "Could not establish ProjectWise session for folder metadata resolution. Last error: \$lastError"
+  throw "Could not establish ProjectWise session for folder metadata resolution. Last error: $lastError"
 }
 
 $base = ([string]$PwPath) -replace '/', '\\\\'
@@ -661,9 +687,9 @@ foreach ($candidate in @(
   }
 }
 
-$folder = \$null
+$folder = $null
 $lookupUsed = ''
-$attempts = \$candidates.Count
+$attempts = $candidates.Count
 
 foreach ($lookup in $candidates) {
   try {
@@ -673,21 +699,21 @@ foreach ($lookup in $candidates) {
       break
     }
   } catch {
-    \$lastError = \$_.Exception.Message
+    $lastError = $_.Exception.Message
   }
 }
 
 if (-not $folder) {
-  throw "Get-PWFolders failed after \$attempts attempts for path '\$PwPath'. LastError: \$lastError"
+  throw "Get-PWFolders failed after $attempts attempts for path '$PwPath'. LastError: $lastError"
 }
 
 $projectId = 0
 [void][int]::TryParse([string]$folder.ProjectID, [ref]$projectId)
 @{
   Path = [string]$PwPath
-  Code = [string]\$folder.Code
-  ProjectID = $projectId
-  ProjectGUID = [string](\$folder.ProjectGUIDString ?? \$folder.ProjectGUID)
+  Code = [string]$folder.Code
+  ProjectID = [string]$projectId
+  ProjectGUID = [string]$folder.ProjectGUIDString
   LookupUsed = $lookupUsed
 } | ConvertTo-Json -Depth 6
 `;
@@ -700,7 +726,7 @@ $projectId = 0
       '-File', tempScript,
       '-ServerPart', getPwServerHostname(conn),
       '-DatasourceName', conn.datasource,
-      '-PwPath', pwPath,
+      '-PwPath', logicalPwPath,
     ], { timeout: 180000, maxBuffer: 20 * 1024 * 1024 });
 
     const stdout = result.stdout?.toString() ?? '';
@@ -713,7 +739,7 @@ $projectId = 0
     
     const item = JSON.parse(extractJsonPayload(stdout));
     return {
-      path: String(item.Path ?? pwPath),
+      path: String(item.Path ?? logicalPwPath),
       code: String(item.Code ?? '').trim() || undefined,
       projectId: Number.isFinite(Number(item.ProjectID)) ? Number(item.ProjectID) : undefined,
       projectGuid: String(item.ProjectGUID ?? '').trim() || undefined,
@@ -1722,14 +1748,17 @@ async function downloadPwFolderToDms(
   dmsPathMap: DmsPathMap,
   messages: CsbExtractionResult['messages'],
   cfgNameLike?: string,
-  knownFolder?: PwFolder
+  knownFolder?: PwFolder,
+  reportProgress?: (message: string) => void
 ): Promise<string | null> {
   try {
+    const effectivePwLogicalPath = toPwLogicalPath(pwLogicalPath);
+    reportProgress?.(`Resolving folder ${effectivePwLogicalPath}...`);
     const matchedFolder = (() => {
       if (knownFolder) return Promise.resolve(knownFolder);
       return (async () => {
         const projects = await client.listProjects();
-        return findFolderByPath(client, pwLogicalPath, projects);
+        return findFolderByPath(client, effectivePwLogicalPath, projects);
       })();
     })();
     let folder = await matchedFolder;
@@ -1742,7 +1771,7 @@ async function downloadPwFolderToDms(
       return null;
     }
 
-    const cachedMeta = pwFolderMetaByPath.get(normalisePwLogicalPathKey(pwLogicalPath));
+    const cachedMeta = pwFolderMetaByPath.get(normalisePwLogicalPathKey(effectivePwLogicalPath));
     if (cachedMeta) {
       folder = {
         ...folder,
@@ -1759,12 +1788,12 @@ async function downloadPwFolderToDms(
     }
 
     if (!folder.code && !folder.projectId) {
-      const resolvedMeta = (await resolvePwFolderMetadataViaPwModule(conn, [pwLogicalPath])).get(normalisePwLogicalPathKey(pwLogicalPath));
+      const resolvedMeta = (await resolvePwFolderMetadataViaPwModule(conn, [effectivePwLogicalPath])).get(normalisePwLogicalPathKey(effectivePwLogicalPath));
       if (resolvedMeta) {
-        pwFolderMetaByPath.set(normalisePwLogicalPathKey(pwLogicalPath), resolvedMeta);
+        pwFolderMetaByPath.set(normalisePwLogicalPathKey(effectivePwLogicalPath), resolvedMeta);
         messages.push({
           level: 'info',
-          text: `PWFolder on-demand metadata: path="${pwLogicalPath}" code="${resolvedMeta.code ?? ''}" projectId="${resolvedMeta.projectId ?? ''}" lookup="${resolvedMeta.lookupUsed ?? ''}"`,
+          text: `PWFolder on-demand metadata: path="${effectivePwLogicalPath}" code="${resolvedMeta.code ?? ''}" projectId="${resolvedMeta.projectId ?? ''}" lookup="${resolvedMeta.lookupUsed ?? ''}"`,
         });
         folder = {
           ...folder,
@@ -1794,7 +1823,7 @@ async function downloadPwFolderToDms(
     // Avoid collisions with an existing different PW folder mapping
     const collides = Object.values(dmsPathMap).some(entry =>
       path.basename(entry.dmsDir).toLowerCase() === dmsDirName.toLowerCase() &&
-      entry.pwLogicalPath.toLowerCase() !== pwLogicalPath.toLowerCase()
+      normalisePwPathForLookup(entry.pwLogicalPath) !== normalisePwPathForLookup(effectivePwLogicalPath)
     );
     if (collides) {
       dmsDirName = `dms${String(dmsIndex).padStart(5, '0')}`;
@@ -1805,12 +1834,13 @@ async function downloadPwFolderToDms(
 
     dmsPathMap[folder.instanceId] = {
       dmsDir,
-      pwLogicalPath,
+      pwLogicalPath: effectivePwLogicalPath,
       folderName: folder.name,
     };
 
     let cfgFiles: Array<{ pwPath: string; content: string }> = [];
     if (cfgNameLike) {
+      reportProgress?.(`Downloading ${cfgNameLike} from ${effectivePwLogicalPath}...`);
       try {
         cfgFiles = await client.fetchCfgFilesByNameLike(folder.instanceId, cfgNameLike);
         messages.push({
@@ -1823,6 +1853,7 @@ async function downloadPwFolderToDms(
     }
 
     if (cfgFiles.length === 0) {
+      reportProgress?.(`Downloading cfg files from ${effectivePwLogicalPath}...`);
       const docs = await client.listDocuments(folder.instanceId);
       for (const doc of docs.filter(d => /\.(cfg|ucf|pcf)$/i.test(d.fileName))) {
         try {
@@ -1862,7 +1893,8 @@ async function downloadAdditionalPwFolders(
   csbs: CsbBlock[],
   workDir: string,
   dmsPathMap: DmsPathMap,
-  messages: CsbExtractionResult['messages']
+  messages: CsbExtractionResult['messages'],
+  reportProgress?: (message: string) => void
 ): Promise<void> {
   const seenPaths = new Set(Object.values(dmsPathMap).map(e => normalisePwPathForLookup(e.pwLogicalPath)));
 
@@ -1872,7 +1904,7 @@ async function downloadAdditionalPwFolders(
         const normalised = normalisePwPathForLookup(v.value);
         if (!seenPaths.has(normalised)) {
           seenPaths.add(normalised);
-          await downloadPwFolderToDms(client, conn, pwFolderMetaByPath, v.value, workDir, dmsPathMap, messages);
+          await downloadPwFolderToDms(client, conn, pwFolderMetaByPath, v.value, workDir, dmsPathMap, messages, undefined, undefined, reportProgress);
         }
       }
     }
@@ -1897,7 +1929,7 @@ async function findFolderByPath(
   rootFolders: PwFolder[]
 ): Promise<PwFolder | null> {
   // Strip the @: datasource-root prefix (PW logical path root marker)
-  const stripped = logicalPath.replace(/^@:[/\\]*/i, '').replace(/^[/\\]+/, '').replace(/[/\\]+$/, '');
+  const stripped = toPwLogicalPath(logicalPath).replace(/^@:[/\\]*/i, '').replace(/^[/\\]+/, '').replace(/[/\\]+$/, '');
 
   const segments = stripped.split(/[/\\]/).filter(Boolean);
   if (segments.length === 0) return null;
@@ -1940,7 +1972,8 @@ async function resolveAtPathsRecursively(
   csbs: CsbBlock[],
   workDir: string,
   dmsPathMap: DmsPathMap,
-  messages: CsbExtractionResult['messages']
+  messages: CsbExtractionResult['messages'],
+  reportProgress?: (message: string) => void
 ): Promise<void> {
   const seenPwFolders = new Set(
     Object.values(dmsPathMap).map(e => normaliseAtPath(e.pwLogicalPath))
@@ -1965,7 +1998,7 @@ async function resolveAtPathsRecursively(
       }
       if (/^include$/i.test(v.name) && v.value) {
         const expanded = expandIncludeExpression(v.value, variableContext);
-        const target = includeToPwFolderTarget(expanded);
+        const target = resolveCfgReferenceToPwTarget(expanded, dmsPathMap);
         if (target) enqueue(target.folderPath, target.cfgNameLike);
       }
       if (isAtPath(v.value)) {
@@ -1977,9 +2010,13 @@ async function resolveAtPathsRecursively(
   // BFS: download queued PW folders and recursively scan all local cfg/ucf/pcf
   // for further %include directives.
   let batch = [...pending];
+  if (batch.length === 0) {
+    batch = Object.values(dmsPathMap).map(entry => ({ pwFolderPath: entry.pwLogicalPath }));
+  }
   let pass = 0;
   while (batch.length > 0 && pass < 20) {
     pass++;
+    reportProgress?.(`Scanning downloaded cfg files for nested includes (pass ${pass})...`);
     const nextBatch: Array<{ pwFolderPath: string; cfgNameLike?: string }> = [];
 
     for (const item of batch) {
@@ -1991,7 +2028,9 @@ async function resolveAtPathsRecursively(
         workDir,
         dmsPathMap,
         messages,
-        item.cfgNameLike
+        item.cfgNameLike,
+        undefined,
+        reportProgress
       );
       if (!dmsDir) continue;
 
@@ -1999,10 +2038,7 @@ async function resolveAtPathsRecursively(
         if (!/\.(cfg|ucf|pcf)$/i.test(file)) continue;
         try {
           const content = fs.readFileSync(file, 'utf8');
-          for (const includeExpr of extractIncludeExpressions(content)) {
-            const expanded = expandIncludeExpression(includeExpr, variableContext);
-            const target = includeToPwFolderTarget(expanded);
-            if (!target) continue;
+          for (const target of extractPwTargetsFromCfgContent(content, variableContext, dmsPathMap)) {
             const key = normaliseAtPath(target.folderPath);
             if (!seenPwFolders.has(key)) {
               seenPwFolders.add(key);
@@ -2023,14 +2059,14 @@ async function resolveAtPathsRecursively(
   }
 }
 
-/** Returns true if a value string is a PW logical path using the @: root prefix. */
+/** Returns true if a value string is a ProjectWise folder reference. */
 function isAtPath(value: string): boolean {
-  return /^@:[/\\]/i.test(value);
+  return /^@:[/\\]/i.test(value) || /^pw:\/\/[^/]+\/Documents\//i.test(value);
 }
 
 /** Normalises a PW logical path for deduplication (lowercase, forward slashes, no trailing slash). */
 function normaliseAtPath(p: string): string {
-  return p.replace(/^@:[/\\]*/i, '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return toPwLogicalPath(p).replace(/^@:[/\\]*/i, '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '').toLowerCase();
 }
 
 /**
@@ -2060,18 +2096,27 @@ function buildIncludeVariableContext(csbs: CsbBlock[]): Map<string, string> {
         value = `${value}/`;
       }
 
-      const existing = context.get(v.name);
-      if (v.operator === '=') context.set(v.name, value);
-      else if (v.operator === ':') {
-        if (!existing) context.set(v.name, value);
-      } else if (v.operator === '>') {
-        context.set(v.name, existing ? `${existing};${value}` : value);
-      } else if (v.operator === '<') {
-        context.set(v.name, existing ? `${value};${existing}` : value);
-      }
+      applyValueToContext(context, v.name, v.operator, value);
     }
   }
   return context;
+}
+
+function applyValueToContext(
+  context: Map<string, string>,
+  name: string,
+  operator: '=' | '>' | '<' | ':',
+  value: string
+): void {
+  const existing = context.get(name);
+  if (operator === '=') context.set(name, value);
+  else if (operator === ':') {
+    if (!existing) context.set(name, value);
+  } else if (operator === '>') {
+    context.set(name, existing ? `${existing};${value}` : value);
+  } else if (operator === '<') {
+    context.set(name, existing ? `${value};${existing}` : value);
+  }
 }
 
 function expandIncludeExpression(expr: string, context: Map<string, string>): string {
@@ -2090,7 +2135,7 @@ function expandIncludeExpression(expr: string, context: Map<string, string>): st
 
 function includeToPwFolderTarget(includePath: string): { folderPath: string; cfgNameLike?: string } | null {
   if (!includePath) return null;
-  let candidate = includePath.trim().replace(/^['"]|['"]$/g, '');
+  let candidate = toPwLogicalPath(includePath.trim().replace(/^['"]|['"]$/g, ''));
   if (!candidate || /\$\(|\$\{/.test(candidate)) return null;
 
   const normal = candidate.replace(/\\/g, '/');
@@ -2116,6 +2161,128 @@ function includeToPwFolderTarget(includePath: string): { folderPath: string; cfg
   folder = folder.replace(/[/\\]+$/, '');
   if (!folder) return null;
   return { folderPath: folder, cfgNameLike };
+}
+
+function resolveCfgReferenceToPwTarget(
+  includePath: string,
+  dmsPathMap: DmsPathMap
+): { folderPath: string; cfgNameLike?: string } | null {
+  return includeToPwFolderTarget(includePath) ?? localDmsPathToPwFolderTarget(includePath, dmsPathMap);
+}
+
+function toPwLogicalValueForContext(value: string, dmsPathMap: DmsPathMap): string {
+  if (!value) return value;
+
+  const parts = value
+    .split(';')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .map(part => {
+      const mapped = localDmsPathToPwFolderTarget(part, dmsPathMap);
+      return mapped?.folderPath ?? part;
+    });
+
+  return parts.length > 0 ? parts.join(';') : value;
+}
+
+function localDmsPathToPwFolderTarget(
+  includePath: string,
+  dmsPathMap: DmsPathMap
+): { folderPath: string; cfgNameLike?: string } | null {
+  if (!includePath) return null;
+  const candidate = includePath.trim().replace(/^['"]|['"]$/g, '');
+  if (!candidate || /\$\(|\$\{/.test(candidate)) return null;
+
+  const normalizedCandidate = normalizeLocalFsPath(candidate);
+  if (!normalizedCandidate) return null;
+
+  const entries = Object.values(dmsPathMap)
+    .map(entry => ({ entry, localDir: normalizeLocalFsPath(entry.dmsDir) }))
+    .filter((item): item is { entry: DmsPathMap[string]; localDir: string } => !!item.localDir)
+    .sort((a, b) => b.localDir.length - a.localDir.length);
+
+  for (const { entry, localDir } of entries) {
+    if (normalizedCandidate !== localDir && !normalizedCandidate.startsWith(`${localDir}/`)) {
+      continue;
+    }
+
+    const rel = normalizedCandidate.slice(localDir.length).replace(/^\/+/, '');
+    if (!rel) {
+      return { folderPath: entry.pwLogicalPath };
+    }
+
+    const parts = rel.split('/').filter(Boolean);
+    if (parts.length === 0) {
+      return { folderPath: entry.pwLogicalPath };
+    }
+
+    let cfgNameLike: string | undefined;
+    if (/[*?]/.test(parts[parts.length - 1]) || /\.(cfg|ucf|pcf)$/i.test(parts[parts.length - 1])) {
+      cfgNameLike = parts[parts.length - 1].replace(/\?/g, '_').replace(/\*/g, '%');
+      parts.pop();
+    }
+
+    const basePath = toPwLogicalPath(entry.pwLogicalPath).replace(/[/\\]+$/, '');
+    const folderPath = parts.length > 0 ? `${basePath}/${parts.join('/')}` : basePath;
+    return { folderPath, cfgNameLike };
+  }
+
+  return null;
+}
+
+function normalizeLocalFsPath(value: string): string | null {
+  if (!value) return null;
+  const normal = value.replace(/\\/g, '/');
+  if (!/^[A-Za-z]:\//.test(normal) && !normal.startsWith('/')) return null;
+  return path.resolve(value).replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function extractPwTargetsFromCfgContent(
+  content: string,
+  context: Map<string, string>,
+  dmsPathMap: DmsPathMap
+): Array<{ folderPath: string; cfgNameLike?: string }> {
+  const targets = new Map<string, { folderPath: string; cfgNameLike?: string }>();
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const stripped = rawLine.replace(/#.*$/, '').trim();
+    if (!stripped) continue;
+
+    const includeMatch = stripped.match(/^%include\s+(.*?)(?:\s+level\s+\w+)?\s*$/i);
+    if (includeMatch) {
+      const expanded = expandIncludeExpression(includeMatch[1].trim(), context);
+      const target = resolveCfgReferenceToPwTarget(expanded, dmsPathMap);
+      if (target) {
+        targets.set(normaliseAtPath(target.folderPath), target);
+      }
+      continue;
+    }
+
+    const assignMatch = stripped.match(/^([A-Za-z_][A-Za-z0-9_\-]*)\s*([=><:])\s*(.*)$/);
+    if (!assignMatch) continue;
+
+    const [, varName, operatorRaw, rawValue] = assignMatch;
+    const operator = operatorRaw as '=' | '>' | '<' | ':';
+    const expandedValue = expandIncludeExpression(rawValue.trim(), context);
+    const contextValue = toPwLogicalValueForContext(expandedValue, dmsPathMap);
+    applyValueToContext(context, varName, operator, contextValue);
+
+    for (const part of splitCfgValueParts(contextValue)) {
+      const target = resolveCfgReferenceToPwTarget(part, dmsPathMap);
+      if (target) {
+        targets.set(normaliseAtPath(target.folderPath), target);
+      }
+    }
+  }
+
+  return [...targets.values()];
+}
+
+function splitCfgValueParts(value: string): string[] {
+  return value
+    .split(';')
+    .map(part => part.trim())
+    .filter(Boolean);
 }
 
 /** Recursively list all files under a directory. */
@@ -2204,6 +2371,7 @@ export function csbToCfgContent(
  */
 function normalisePwPathForLookup(p: string): string {
   return p
+    .replace(/^pw:\/\/[^/]+\/Documents\//i, '/')
     .replace(/^@:[/\\]*/i, '') // strip @: datasource-root prefix
     .replace(/\\/g, '/')       // backslash → forward slash
     .replace(/^\/+/, '')       // strip leading slashes
@@ -2388,6 +2556,55 @@ export function buildMasterTmp(
     // PW_MANAGEDWORKSPACE accumulates the database ID of every processed CSB.
     // MicroStation/ORD checks for this variable to confirm Managed Workspace mode.
     lines.push(`PW_MANAGEDWORKSPACE > ${csb.id}`);
+  }
+
+  // ── Configuration files from downloaded PW folders ─────────────────────
+  // Each dms directory contains cfg/ucf/pcf files downloaded from a PW folder.
+  // In real PWE, MicroStation's system configuration uses the variable that
+  // points to each dms dir (e.g. _DYNAMIC_DATASOURCE_BENTLEYROOT) to %include
+  // those files.  Since we don't have the system cfg, we emit the includes here
+  // directly — after all CSBs so that the variable assignments have already
+  // been processed and are available for expansion inside the downloaded files.
+  //
+  // Ordering within each dms directory:
+  //   1. *Setup.cfg / *Configuration.cfg / ConfigurationSetup.cfg  (entry points)
+  //   2. Everything else alphabetically
+  //   Subdirectory files are intentionally excluded; they will be picked up
+  //   via %include directives inside the top-level cfg files themselves.
+  const dmsEntriesForInclude = Object.values(dmsPathMap)
+    .map(e => e.dmsDir)
+    .filter((v, i, a) => a.indexOf(v) === i); // unique dirs
+
+  const dmsIncludeLines: string[] = [];
+  for (const dmsDir of dmsEntriesForInclude) {
+    let cfgFilesInRoot: string[] = [];
+    try {
+      cfgFilesInRoot = fs.readdirSync(dmsDir, { withFileTypes: true })
+        .filter(e => e.isFile() && /\.(cfg|ucf|pcf)$/i.test(e.name))
+        .map(e => e.name);
+    } catch { /* dms dir not yet on disk during test runs */ }
+
+    if (cfgFilesInRoot.length === 0) continue;
+
+    // Sort: known "setup / entry" files first, then alphabetical
+    cfgFilesInRoot.sort((a, b) => {
+      const isSetup = (n: string) => /setup|configuration|init|main/i.test(n);
+      const as = isSetup(a) ? 0 : 1;
+      const bs = isSetup(b) ? 0 : 1;
+      if (as !== bs) return as - bs;
+      return a.toLowerCase().localeCompare(b.toLowerCase());
+    });
+
+    const fwdDmsDir = dmsDir.replace(/\\/g, '/');
+    dmsIncludeLines.push(`# ── Downloaded: ${fwdDmsDir}`);
+    for (const fname of cfgFilesInRoot) {
+      dmsIncludeLines.push(`%include ${fwdDmsDir}/${fname}`);
+    }
+  }
+
+  if (dmsIncludeLines.length > 0) {
+    lines.push(`# ── Cfg files from downloaded PW folders ─────────────────────────────`);
+    lines.push(...dmsIncludeLines);
   }
 
   lines.push('');

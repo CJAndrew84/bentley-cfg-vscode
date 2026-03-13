@@ -777,7 +777,7 @@ function activate(context) {
             // If no applications found (or user chose folder browse), pick a folder
             if (!applicationInstanceId) {
                 panel.showLoading('Select ProjectWise folder (RichProject navigation or GUID)...');
-                const folderSelection = await promptForPwFolderGuid(client, {
+                const folderSelection = await promptForPwFolderGuid(context, conn.id, client, {
                     title: 'Select PW Folder',
                     placeHolder: 'Select the document folder to resolve WorkSet CSBs',
                 });
@@ -808,7 +808,7 @@ function activate(context) {
                 ], { placeHolder: 'Do you want to include WorkSet/Discipline CSBs for a specific document or folder?' });
                 if (wantScope?.detail === 'folder') {
                     panel.showLoading('Select document folder (RichProject navigation or GUID)...');
-                    const folderSelection = await promptForPwFolderGuid(client, {
+                    const folderSelection = await promptForPwFolderGuid(context, conn.id, client, {
                         title: 'Select Document Folder',
                         placeHolder: 'Select the document folder',
                     });
@@ -836,6 +836,10 @@ function activate(context) {
                 applicationInstanceId,
                 folderGuid,
                 documentGuid,
+                progress: (message) => {
+                    panel.showLoading(message);
+                    outputChannel.appendLine(`[${new Date().toISOString()}] ${message}`);
+                },
             }, client);
             logPwExtraction(label, extraction);
             const backendMsg = `Backend: ${extraction.backend} | CSBs: ${extraction.csbs.length}`;
@@ -942,7 +946,7 @@ function activate(context) {
             authType: conn.authType,
             ignoreSsl: conn.ignoreSsl,
         });
-        const folderSelection = await promptForPwFolderGuid(client, {
+        const folderSelection = await promptForPwFolderGuid(context, conn.id, client, {
             title: 'Deploy Workspace to ProjectWise — Step 3/4: Target Folder',
             placeHolder: 'Select the ProjectWise folder to deploy into',
         });
@@ -1233,8 +1237,22 @@ function storeResult(entry) {
     if (lastParseResults.length > 5)
         lastParseResults = lastParseResults.slice(0, 5);
 }
-async function promptForPwFolderGuid(client, opts) {
+function getLastPwFolderSelection(context, connectionId) {
+    return context.globalState.get(`pw.lastFolder.${connectionId}`);
+}
+async function setLastPwFolderSelection(context, connectionId, selection) {
+    await context.globalState.update(`pw.lastFolder.${connectionId}`, selection);
+}
+async function promptForPwFolderGuid(context, connectionId, client, opts) {
+    const previousSelection = getLastPwFolderSelection(context, connectionId);
     const mode = await vscode.window.showQuickPick([
+        ...(previousSelection
+            ? [{
+                    label: '$(history) Use previous folder',
+                    description: `${previousSelection.folderLabel} (${previousSelection.folderGuid})`,
+                    detail: 'previous',
+                }]
+            : []),
         {
             label: '$(organization) Navigate from RichProjects',
             description: "Uses /Project?$filter=isRichProject+eq+'TRUE'&!poly",
@@ -1251,6 +1269,9 @@ async function promptForPwFolderGuid(client, opts) {
     });
     if (!mode)
         return undefined;
+    if (mode.detail === 'previous' && previousSelection) {
+        return previousSelection;
+    }
     if (mode.detail === 'guid') {
         const guid = await vscode.window.showInputBox({
             title: opts.title,
@@ -1260,7 +1281,9 @@ async function promptForPwFolderGuid(client, opts) {
         });
         if (!guid)
             return undefined;
-        return { folderGuid: guid.trim(), folderLabel: guid.trim() };
+        const selection = { folderGuid: guid.trim(), folderLabel: guid.trim() };
+        await setLastPwFolderSelection(context, connectionId, selection);
+        return selection;
     }
     const richProjects = await client.listRichProjects();
     if (richProjects.length === 0) {
@@ -1300,7 +1323,9 @@ async function promptForPwFolderGuid(client, opts) {
         if (!pick)
             return undefined;
         if (pick.detail === '__use_current__' && state.folder) {
-            return { folderGuid: state.folder.instanceId, folderLabel: state.folder.name };
+            const selection = { folderGuid: state.folder.instanceId, folderLabel: state.folder.name };
+            await setLastPwFolderSelection(context, connectionId, selection);
+            return selection;
         }
         if (pick.detail === '__up__' && state.parent) {
             state = state.parent;

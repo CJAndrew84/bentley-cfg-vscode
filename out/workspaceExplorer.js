@@ -59,6 +59,7 @@ class WorkspaceExplorerPanel {
     constructor(panel, _context) {
         this._context = _context;
         this._disposables = [];
+        this._currentReportFileName = 'bentley-workspace-report.html';
         this._panel = panel;
         this._panel.webview.html = this._getLoadingHtml();
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
@@ -70,11 +71,30 @@ class WorkspaceExplorerPanel {
                 if (msg.file) {
                     const uri = vscode.Uri.file(msg.file);
                     await vscode.window.showTextDocument(uri, {
-                        preview: true,
+                        viewColumn: vscode.ViewColumn.Beside,
+                        preview: false,
+                        preserveFocus: true,
                         selection: msg.line !== undefined
                             ? new vscode.Range(msg.line - 1, 0, msg.line - 1, 0)
                             : undefined,
                     });
+                }
+                break;
+            case 'saveReport':
+                if (!this._currentReportHtml) {
+                    vscode.window.showWarningMessage('No report is available to save yet.');
+                    return;
+                }
+                {
+                    const target = await vscode.window.showSaveDialog({
+                        saveLabel: 'Save Report',
+                        defaultUri: vscode.Uri.file(path.join(this._context.globalStorageUri.fsPath, this._currentReportFileName)),
+                        filters: { 'HTML Report': ['html'] },
+                    });
+                    if (!target)
+                        return;
+                    await vscode.workspace.fs.writeFile(target, Buffer.from(this._currentReportHtml, 'utf8'));
+                    vscode.window.showInformationMessage(`Report saved: ${target.fsPath}`);
                 }
                 break;
             case 'ready':
@@ -83,14 +103,22 @@ class WorkspaceExplorerPanel {
         }
     }
     showLoading(message) {
+        this._currentReportHtml = undefined;
+        this._currentReportFileName = 'bentley-workspace-report.html';
         this._panel.webview.html = this._getLoadingHtml(message);
     }
     showParseResult(result, label, rootPath) {
-        this._panel.webview.html = this._getResultHtml(result, label, rootPath);
+        const html = this._getResultHtml(result, label, rootPath);
+        this._currentReportHtml = html;
+        this._currentReportFileName = `${sanitizeFileName(label)}.report.html`;
+        this._panel.webview.html = html;
         this._panel.reveal(vscode.ViewColumn.Beside);
     }
     showCompareResult(compare, leftLabel, rightLabel) {
-        this._panel.webview.html = this._getCompareHtml(compare, leftLabel, rightLabel);
+        const html = this._getCompareHtml(compare, leftLabel, rightLabel);
+        this._currentReportHtml = html;
+        this._currentReportFileName = `${sanitizeFileName(`${leftLabel}-vs-${rightLabel}`)}.report.html`;
+        this._panel.webview.html = html;
         this._panel.reveal(vscode.ViewColumn.Beside);
     }
     dispose() {
@@ -178,6 +206,7 @@ class WorkspaceExplorerPanel {
     <input id="filterInput" type="text" placeholder="Filter variables..." oninput="filterTable(this.value)">
     <label><input type="checkbox" id="showUnresolved" onchange="filterTable(document.getElementById('filterInput').value)"> Show only issues</label>
     <label><input type="checkbox" id="showChanged" onchange="filterTable(document.getElementById('filterInput').value)"> Show only overridden</label>
+    <button type="button" onclick="saveReport()">💾 Save report</button>
   </div>
 </div>
 
@@ -201,6 +230,9 @@ ${issueRows ? `<details open><summary><strong>⚠ Issues</strong></summary>
 const vscode = acquireVsCodeApi();
 function openFile(file, line) {
   vscode.postMessage({ command: 'openFile', file, line });
+}
+function saveReport() {
+  vscode.postMessage({ command: 'saveReport' });
 }
 function decodeFile(encoded) {
   try { return decodeURIComponent(encoded); } catch { return encoded; }
@@ -291,6 +323,7 @@ function filterTable(q) {
   <div class="filter-bar">
     <input id="filterInput" type="text" placeholder="Filter variables..." oninput="filterTable(this.value)">
     <label><input type="checkbox" id="hideUnchanged" onchange="filterTable(document.getElementById('filterInput').value)" checked> Hide unchanged</label>
+    <button type="button" onclick="saveReport()">💾 Save report</button>
   </div>
 </div>
 
@@ -302,6 +335,7 @@ ${section('✓ Unchanged Variables', unchanged, false)}
 <script>
 const vscode = acquireVsCodeApi();
 function openFile(file, line) { vscode.postMessage({ command: 'openFile', file, line }); }
+function saveReport() { vscode.postMessage({ command: 'saveReport' }); }
 function filterTable(q) {
   const hideUnchanged = document.getElementById('hideUnchanged').checked;
   q = q.toLowerCase();
@@ -342,6 +376,8 @@ const WEBVIEW_CSS = `
   .filter-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   .filter-bar input[type=text] { flex: 1; max-width: 300px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 4px; }
   .filter-bar label { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+  .filter-bar button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 1px solid transparent; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+  .filter-bar button:hover { background: var(--vscode-button-hoverBackground); }
 
   details { margin: 0; border-bottom: 1px solid var(--vscode-panel-border); }
   details summary { padding: 8px 16px; cursor: pointer; background: var(--vscode-sideBarSectionHeader-background); user-select: none; display: flex; align-items: center; gap: 8px; }
@@ -408,5 +444,12 @@ function truncate(s, n) {
     if (!s)
         return '';
     return s.length > n ? s.substring(0, n) + '…' : s;
+}
+function sanitizeFileName(input) {
+    const cleaned = (input ?? 'bentley-workspace-report')
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return cleaned || 'bentley-workspace-report';
 }
 //# sourceMappingURL=workspaceExplorer.js.map
