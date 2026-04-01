@@ -4,6 +4,8 @@ Full language support and workspace analysis tooling for Bentley MicroStation / 
 
 > **New to the extension?** See the [How-To Guide](HOWTO.md) for step-by-step instructions.
 
+> For extension internals and contribution guidance, see the [Architecture Overview](ARCHITECTURE.md). This project is released under the [MIT License](LICENSE.md).
+
 ---
 
 ## Installation
