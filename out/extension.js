@@ -1362,8 +1362,8 @@ async function promptNewConnection() {
     const username = await vscode.window.showInputBox({ prompt: 'Username' });
     if (!username)
         return null;
-    const authTypePick = await vscode.window.showQuickPick(['Basic (username/password)', 'Bearer token'], { placeHolder: 'Authentication type' });
-    const authType = authTypePick?.includes('Bearer') ? 'bearer' : 'basic';
+    const authTypePick = await vscode.window.showQuickPick(['Basic (username/password)', 'BentleyIMS'], { placeHolder: 'Authentication type' });
+    const authType = authTypePick === 'BentleyIMS' ? 'bearer' : 'basic';
     const sslPick = await vscode.window.showQuickPick(['Verify SSL certificate (recommended)', 'Ignore SSL errors (self-signed cert)'], { placeHolder: 'SSL verification' });
     const ignoreSsl = sslPick?.includes('Ignore') ?? false;
     return {
