@@ -308,7 +308,7 @@ Open-PWSession -DatasourceUrl $url -UserName $user -Password $pass
 Get-PWManagedWorkspaceCSBs -ApplicationName $appName
 ```
 
-`PWPS_DAB` (ProjectWise PowerShell Data Access Bridge) is a Bentley-supplied PowerShell module that ships with ProjectWise Explorer. It provides direct access to the PW database and can enumerate CSBs, their variable assignments, and linked CSB relationships.
+`PWPS_DAB` (ProjectWise PowerShell Data Access Bridge) is a Bentley-supplied PowerShell module that can be installed from PS Gallery. It provides direct access to the PW database and can enumerate CSBs, their variable assignments, and linked CSB relationships.
 
 The PowerShell script is built dynamically as a here-string and executed via `child_process.spawnSync('powershell.exe', ['-Command', script])`. The script outputs JSON to stdout, which the extension parses back into `CsbBlock[]`.
 
