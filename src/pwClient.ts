@@ -7,7 +7,7 @@
  * WSG URL format:
  *   https://<server>/ws/v2.8/Repositories/Bentley.PW--<server>~3A<datasource>/PW_WSG/
  *
- * Auth: Basic (user:password) or Bearer token via Bentley IMS
+ * Auth: Basic (user:password) or BentleyIMS token
  */
 
 import * as https from 'https';
@@ -23,7 +23,7 @@ export interface PwConnection {
   datasource: string;
   /** WSG username */
   username: string;
-  /** WSG password or Bearer token */
+  /** WSG password or BentleyIMS token */
   credential: string;
   /** 'basic' | 'bearer' */
   authType: 'basic' | 'bearer';
