@@ -74,7 +74,7 @@ bentley-cfg-vscode/
 ```
 1. Register language providers
    ├── CompletionItemProvider  — variables, directives, level names
-   ├── HoverProvider           — inline documentation for 300+ known variables
+   ├── HoverProvider           — inline documentation for 210 known variables
    └── DiagnosticsProvider     — validates on open / change / save
 
 2. Register all 13 commands (see Commands Reference)
@@ -91,7 +91,7 @@ The extension uses a single shared `WorkspaceExplorer` WebView panel that is cre
 
 ## Language Support Layer
 
-All language intelligence is registered in `extension.ts` and driven by a built-in knowledge base of more than 300 documented CFG variables.
+All language intelligence is registered in `extension.ts` and driven by a built-in knowledge base of 210 documented CFG variables.
 
 ### Variable Knowledge Base
 
@@ -189,16 +189,20 @@ Pass 5 — Validation
 // The result of parsing a workspace
 export interface ParseResult {
   variables: Map<string, ConfigEntry>;
+  macros: Set<string>;
   errors: ParseError[];
   resolutionIssues: ResolutionIssue[];
-  includedFiles: string[];
-  summary: {
-    totalVariables: number;
-    resolvedVariables: number;
-    unresolvedVariables: number;
-    errorCount: number;
-    warningCount: number;
-  };
+  filesProcessed: string[];
+  includeTree: IncludeNode;
+}
+
+// Tree node representing one included file and its children
+export interface IncludeNode {
+  file: string;
+  level: ConfigLevel;
+  children: IncludeNode[];
+  lineCount: number;
+  variablesDefined: string[];
 }
 
 // A single configuration variable assignment
@@ -308,7 +312,7 @@ Open-PWSession -DatasourceUrl $url -UserName $user -Password $pass
 Get-PWManagedWorkspaceCSBs -ApplicationName $appName
 ```
 
-`PWPS_DAB` (ProjectWise PowerShell Data Access Bridge) is a Bentley-supplied PowerShell module that can be installed from PS Gallery. It provides direct access to the PW database and can enumerate CSBs, their variable assignments, and linked CSB relationships.
+`PWPS_DAB` (ProjectWise PowerShell Data Access Bridge) is a Bentley-supplied PowerShell module available on PowerShell Gallery (`Install-Module -Name PWPS_DAB`). It provides direct access to the PW database and can enumerate CSBs, their variable assignments, and linked CSB relationships.
 
 The PowerShell script is built dynamically as a here-string and executed via `child_process.spawnSync('powershell.exe', ['-Command', script])`. The script outputs JSON to stdout, which the extension parses back into `CsbBlock[]`.
 
@@ -430,7 +434,7 @@ Step 4 — File Selection
 
 **Command:** `bentley-cfg.exportDeploymentPackage`
 
-Packages the local workspace folder into a zip archive alongside the generated `deploy-csb.ps1` script, ready to hand off to a ProjectWise administrator.
+Generates the `deploy-csb.ps1` script locally (without connecting to or uploading to ProjectWise), ready to hand off to a ProjectWise administrator along with the workspace folder.
 
 ---
 
@@ -481,16 +485,11 @@ export interface ConfigEntry {
 
 export interface ParseResult {
   variables: Map<string, ConfigEntry>;
+  macros: Set<string>;
   errors: ParseError[];
   resolutionIssues: ResolutionIssue[];
-  includedFiles: string[];
-  summary: {
-    totalVariables: number;
-    resolvedVariables: number;
-    unresolvedVariables: number;
-    errorCount: number;
-    warningCount: number;
-  };
+  filesProcessed: string[];
+  includeTree: IncludeNode;
 }
 
 // ── pwClient.ts ───────────────────────────────────────────────────────────────
@@ -568,13 +567,13 @@ All commands are prefixed `bentley-cfg.` and accessible from the Command Palette
 | `loadLocalWorkspace` | Load Local Workspace | Opens folder picker |
 | `loadCurrentFile` | Resolve Current File | Resolves the active editor file |
 | `loadProjectWiseWorkspace` | Load ProjectWise Managed Workspace | Requires a saved PW connection |
-| `managePwConnections` | Manage ProjectWise Connections | Add / edit / delete saved connections |
+| `managePwConnections` | Manage ProjectWise Connections | View and delete saved connections |
 | `compareWorkspaces` | Compare Loaded Workspaces | Requires two workspaces to be loaded |
 | `compareFolders` | Compare Two Workspace Folders | Opens two folder pickers |
-| `importCsbManual` | Import CSB Content Manually | Paste raw CSB JSON for offline use |
+| `importCsbManual` | Import CSB Content Manually | Paste CSB variable content (VAR = value lines) for offline use |
 | `viewMasterTmp` | View Generated Master Config | Opens the `.tmp` file after a PW load |
 | `deployWorkspaceToPw` | Deploy Workspace to ProjectWise | 4-step deployment wizard |
-| `exportDeploymentPackage` | Export Deployment Package | Generates zip + deploy-csb.ps1 |
+| `exportDeploymentPackage` | Export Deployment Package | Generates deploy-csb.ps1 without a live PW connection |
 | `checkDmwfVersion` | Check for DMWF Updates | Opens DMWF download page |
 
 Context-menu entries (right-click in editor) are registered for `validateFile` and `loadCurrentFile` when a CFG file is active. The `loadCurrentFile` command also appears as an icon button in the editor title bar.

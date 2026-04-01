@@ -3,7 +3,7 @@
  *
  * What "deploying a workspace" means in Bentley / DMWF terms
  * ──────────────────────────────────────────────────────────
- * A Bentley Digital Managed Workspace Framework (DMWF) deployment has two
+ * A Bentley Dynamic Managed Workspace Framework (DMWF) deployment has two
  * independent parts:
  *
  *   1. Repository files  — the actual .cfg, .ucf, .pcf, seed, cell, dgnlib
@@ -284,7 +284,7 @@ function generatePsScript(plan: DeploymentPlan): string {
     '# Prerequisites',
     '# ─────────────',
     '# • Run on a machine that has the ProjectWise PowerShell module (PWPS_DAB)',
-    '#   installed (ships with PW Explorer CONNECT Edition).',
+    '#   installed from PowerShell Gallery (Install-Module -Name PWPS_DAB).',
     '# • The account used must have ProjectWise Administrator rights.',
     '# • The CFG files must already be uploaded to ProjectWise (use the',
     "#   'Deploy Workspace to ProjectWise' command in VS Code first).",
