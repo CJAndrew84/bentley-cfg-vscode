@@ -74,7 +74,7 @@ bentley-cfg-vscode/
 ```
 1. Register language providers
    ├── CompletionItemProvider  — variables, directives, level names
-   ├── HoverProvider           — inline documentation for 300+ known variables
+   ├── HoverProvider           — inline documentation for 210 known variables
    └── DiagnosticsProvider     — validates on open / change / save
 
 2. Register all 13 commands (see Commands Reference)
@@ -91,7 +91,7 @@ The extension uses a single shared `WorkspaceExplorer` WebView panel that is cre
 
 ## Language Support Layer
 
-All language intelligence is registered in `extension.ts` and driven by a built-in knowledge base of more than 300 documented CFG variables.
+All language intelligence is registered in `extension.ts` and driven by a built-in knowledge base of 210 documented CFG variables.
 
 ### Variable Knowledge Base
 
