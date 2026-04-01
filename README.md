@@ -175,10 +175,15 @@ The extension then:
 
 ### PowerShell CSB script (`deploy-csb.ps1`)
 
-The generated script uses the **PWPS_DAB** module (ships with PW Explorer CONNECT Edition):
+The generated script uses the **PWPS_DAB** module, available on [PowerShell Gallery](https://www.powershellgallery.com/packages/PWPS_DAB). Install it once with:
 
 ```powershell
-# Edit the $Config section at the top, then run:
+Install-Module -Name PWPS_DAB
+```
+
+Then edit the `$Config` section at the top of the script and run it:
+
+```powershell
 .\deploy-csb.ps1
 ```
 

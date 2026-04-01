@@ -588,7 +588,7 @@ let lastParseResults: Array<{ label: string; result: ParseResult; rootPath: stri
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The DMWF (Digital Managed Workspace Framework) version this extension's
+ * The DMWF (Dynamic Managed Workspace Framework) version this extension's
  * snippets, variables, and templates are based on.
  *
  * Bentley releases new DMWF packages annually (aligned with product generation

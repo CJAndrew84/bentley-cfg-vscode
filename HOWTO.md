@@ -225,11 +225,13 @@ Use this when you cannot connect to ProjectWise directly (e.g. no network access
 
 ### Step-by-step
 
-1. Obtain the CSB variable content — this is the raw text that PW writes into CFG files, typically a series of `VARNAME = value` lines
-2. Open the Command Palette and run **Bentley CFG: Import CSB Content Manually**
-3. Paste the CSB content into the input box when prompted
-4. The extension processes it as if it were extracted directly from ProjectWise
-5. The Workspace Explorer panel opens with the resolved variables
+1. Open the Command Palette and run **Bentley CFG: Import CSB Content Manually**
+2. Select the **CSB processing level** from the list (e.g. `WorkSpace`, `WorkSet`)
+3. Enter a **name** for the CSB (used for identification, e.g. `MSta_CE_Configuration_Root`)
+4. Obtain the CSB variable content — this is the raw text that PW writes into CFG files, typically a series of `VARNAME = value` lines
+5. Paste the CSB content into the input box when prompted
+6. The extension writes a `.cfg` file to a temporary working directory and opens it in the editor
+7. To resolve all variables, run **Bentley CFG: Load Local Workspace** and point it at the temporary folder shown in the notification
 
 ---
 
