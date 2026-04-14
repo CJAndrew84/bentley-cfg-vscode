@@ -2,7 +2,7 @@
   "name": "bentley-cfg",
   "displayName": "Bentley Workspace Configuration (CFG)",
   "description": "Syntax highlighting, snippets, and IntelliSense for Bentley MicroStation / OpenRoads Designer workspace configuration files (.cfg, .ucf, .pcf)",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "bentley-cfg-tools",
   "engines": {
     "vscode": "^1.75.0"
